@@ -6194,6 +6194,10 @@
       "default_goal": "Sua estrela-guia está em {{northStar}}, o roteiro em {{roadmap}} e as tarefas em {{tasks}}. Escolha o próximo passo de maior impacto rumo ao objetivo e execute-o. Atualize {{tasks}}. Publique um bloqueio UMA única vez se realmente travar. Quando o objetivo for alcançado, chame a ferramenta {{stopTool}} para encerrar o loop."
     },
     "bottomTerminalPanel": {
+      "close_all_tabs": "Fechar todas as abas",
+      "close_other_tabs": "Fechar outras abas",
+      "close_tab": "Fechar",
+      "close_tabs_to_right": "Fechar abas à direita",
       "close_terminal": "Fechar terminal",
       "focus_popout": "Focar janela destacada",
       "hide_terminal_panel": "Ocultar painel do terminal",

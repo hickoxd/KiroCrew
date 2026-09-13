@@ -1967,7 +1967,11 @@
       "default_goal": "Your north star is in {{northStar}}, roadmap in {{roadmap}}, tasks in {{tasks}}. Pick the single highest-leverage next step toward the goal and execute it. Update {{tasks}}. Post a blocker ONCE if genuinely stuck. When the goal is met, call the {{stopTool}} tool to halt the loop."
     },
     "bottomTerminalPanel": {
+      "close_all_tabs": "Close all tabs",
       "close_failed": "Couldn't stop this terminal's shell on the server. It will be cleaned up automatically.",
+      "close_other_tabs": "Close other tabs",
+      "close_tab": "Close",
+      "close_tabs_to_right": "Close tabs to the right",
       "closing_terminal": "Closing terminal…",
       "maximum_terminals": "Maximum {{n}} terminals",
       "terminal": "Terminal"

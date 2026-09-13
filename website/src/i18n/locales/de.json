@@ -6097,6 +6097,10 @@
       "default_goal": "Dein Nordstern steht in {{northStar}}, die Roadmap in {{roadmap}}, die Aufgaben in {{tasks}}. Wähle den einen nächsten Schritt mit der größten Wirkung auf das Ziel und führe ihn aus. Aktualisiere {{tasks}}. Melde eine Blockade nur EINMAL, wenn du wirklich festsitzt. Wenn das Ziel erreicht ist, rufe das Tool {{stopTool}} auf, um die Schleife zu beenden."
     },
     "bottomTerminalPanel": {
+      "close_all_tabs": "Alle Tabs schließen",
+      "close_other_tabs": "Andere Tabs schließen",
+      "close_tab": "Schließen",
+      "close_tabs_to_right": "Tabs rechts schließen",
       "close_terminal": "Terminal schließen",
       "focus_popout": "Ausgekoppeltes Fenster fokussieren",
       "hide_terminal_panel": "Terminal-Panel ausblenden",

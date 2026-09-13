@@ -6194,6 +6194,10 @@
       "default_goal": "Ton étoile polaire est dans {{northStar}}, la feuille de route dans {{roadmap}} et les tâches dans {{tasks}}. Choisis la prochaine étape la plus utile vers l'objectif et exécute-la. Mets à jour {{tasks}}. Signale un blocage UNE seule fois si tu es vraiment bloqué. Quand l'objectif est atteint, appelle l'outil {{stopTool}} pour arrêter la boucle."
     },
     "bottomTerminalPanel": {
+      "close_all_tabs": "Fermer tous les onglets",
+      "close_other_tabs": "Fermer les autres onglets",
+      "close_tab": "Fermer",
+      "close_tabs_to_right": "Fermer les onglets à droite",
       "close_terminal": "Fermer le terminal",
       "focus_popout": "Afficher la fenêtre détachée",
       "hide_terminal_panel": "Masquer le panneau du terminal",
