@@ -298,6 +298,7 @@ _FACADE_DEFS = (
     "_register_browser_install_cleanup",
     "_register_browser_view_cleanup",
     "_register_instances_hooks",
+    "_dispatch_healthy_boot_marker",
     "start_dashboard",
     "start_api_server",
 )
@@ -610,7 +611,7 @@ def test_every_base_definition_is_in_exactly_one_place() -> None:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
     }
     assert defined == set(_FACADE_DEFS)
-    assert len(defined | _MOVED) == len(defined) + len(_MOVED) == 101
+    assert len(defined | _MOVED) == len(defined) + len(_MOVED) == 102
 
 
 def test_the_owners_log_as_the_facade() -> None:
@@ -1430,6 +1431,7 @@ _DASHBOARD_BOOT = tuple("""
     _kick_local_decision_model _kick_knowledge_orphan_reclaim load_loop_stall_exit_after
     _arm_prevent_sleep_poll safety_override safety_override safety_override
     await_crewmate_prune_settled current_context record_boot_to_ready
+    _dispatch_healthy_boot_marker
     """.split())
 _DASHBOARD_TEARDOWN = tuple("""
     current_context unregister_status_delta_sink stop_hook_reconciler
@@ -1443,7 +1445,8 @@ _DASHBOARD_ELSEWHERE = tuple("""
     T:_write_secret_file T:apply_config_duration T:cleanup_migrated_builtin
     T:cleanup_migrated_builtin T:cleanup_migrated_builtin T:cleanup_migrated_builtin
     T:migrate_channel_transcripts T:newest_dump_with_stacks T:open_dump_file
-    T:prune_synced_crewmates T:refresh_config_meta_stamp T:refresh_materialized_agents
+    T:prune_synced_crewmates T:record_healthy_boot T:refresh_config_meta_stamp
+    T:refresh_materialized_agents
     T:register_builtin_apps T:rotate_dumps T:start_deferred_app_backends
     T:start_enabled_app_backends T:sweep_stale_dumps T:take_dropped_grant
     T:warm_own_host_names
@@ -1471,12 +1474,13 @@ _API_BOOT = tuple("""
     _resolved_bound_host _reconcile_listener_publication _kick_workflow_initialization
     _kick_connections_warm_scavenge _kick_session_search_index _kick_config_watch
     _kick_local_decision_model _arm_prevent_sleep_poll record_boot_to_ready
+    _dispatch_healthy_boot_marker
     """.split())
 _API_TEARDOWN: tuple[str, ...] = ()
 _API_ELSEWHERE = tuple("""
     S:_initialize_workflow_service S:_stt_idle_sweep S:_stt_startup_prewarm
     T:_live_sibling_port T:_write_instance_credentials T:_write_secret_file
-    T:_write_secret_file T:_write_secret_file T:warm_own_host_names
+    T:_write_secret_file T:_write_secret_file T:record_healthy_boot T:warm_own_host_names
     """.split())
 
 #: Done callbacks of tasks the boot creates, whose position depends on when a worker
