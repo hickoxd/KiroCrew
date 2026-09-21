@@ -400,8 +400,10 @@ def test_token_probe_warns_on_stale_dashboard():
 
     stderr_capture = io.StringIO()
 
-    with patch("kiro_crew.cli_server.loopback_urlopen", return_value=mock_resp), \
-         patch("sys.stderr", stderr_capture):
+    with (
+        patch("kiro_crew.cli_server.loopback_urlopen", return_value=mock_resp),
+        patch("sys.stderr", stderr_capture),
+    ):
         _probe_dashboard_health(7777)
 
     assert "stale dashboard" in stderr_capture.getvalue()
@@ -419,8 +421,10 @@ def test_token_probe_silent_on_healthy_dashboard():
 
     stderr_capture = io.StringIO()
 
-    with patch("kiro_crew.cli_server.loopback_urlopen", return_value=mock_resp), \
-         patch("sys.stderr", stderr_capture):
+    with (
+        patch("kiro_crew.cli_server.loopback_urlopen", return_value=mock_resp),
+        patch("sys.stderr", stderr_capture),
+    ):
         _probe_dashboard_health(7777)
 
     assert stderr_capture.getvalue() == ""
@@ -432,8 +436,10 @@ def test_token_probe_silent_on_network_error():
 
     stderr_capture = io.StringIO()
 
-    with patch("kiro_crew.cli_server.loopback_urlopen", side_effect=OSError("connection refused")), \
-         patch("sys.stderr", stderr_capture):
+    with (
+        patch("kiro_crew.cli_server.loopback_urlopen", side_effect=OSError("connection refused")),
+        patch("sys.stderr", stderr_capture),
+    ):
         _probe_dashboard_health(7777)
 
     assert stderr_capture.getvalue() == ""
@@ -499,9 +505,9 @@ async def test_watchdog_survives_asset_gap_that_heals_while_draining(caplog):
     assert checks >= 5
     # A run that heals must not have announced a shutdown it then abandoned:
     # the CRITICAL belongs after the post-drain re-check, not before the drain.
-    assert not [r for r in caplog.records if r.levelno >= logging.CRITICAL], (
-        "healed run logged a misleading graceful-shutdown CRITICAL"
-    )
+    assert not [
+        r for r in caplog.records if r.levelno >= logging.CRITICAL
+    ], "healed run logged a misleading graceful-shutdown CRITICAL"
 
 
 # --- update stand-down ------------------------------------------------------------
@@ -622,10 +628,13 @@ async def test_a_step_live_at_arm_time_is_waited_out_then_the_watchdog_arms():
     def _owner():
         return "the policy apply command" if reads["n"] < 3 else None
 
-    with patch(
-        "kiro_crew.dashboard.stale_asset_watchdog.assets_present",
-        side_effect=_assets_present,
-    ), _owner_is(_owner):
+    with (
+        patch(
+            "kiro_crew.dashboard.stale_asset_watchdog.assets_present",
+            side_effect=_assets_present,
+        ),
+        _owner_is(_owner),
+    ):
         fired = await _run(shutdown)
 
     assert fired is True
@@ -647,10 +656,13 @@ async def test_a_gap_a_boot_time_step_leaves_behind_arms_the_watchdog(caplog):
         owner_reads["n"] += 1
         return "the policy apply command" if owner_reads["n"] <= 2 else None
 
-    with patch(
-        "kiro_crew.dashboard.stale_asset_watchdog.assets_present",
-        return_value=False,
-    ), _owner_is(_owner):
+    with (
+        patch(
+            "kiro_crew.dashboard.stale_asset_watchdog.assets_present",
+            return_value=False,
+        ),
+        _owner_is(_owner),
+    ):
         fired = await _run(shutdown)
 
     assert fired is True
@@ -726,7 +738,9 @@ async def test_a_step_wedged_past_its_maximum_no_longer_holds_the_watchdog(caplo
 
     assert fired is True
     assert [
-        r for r in caplog.records if r.name == "kiro_crew.update_ownership" and "maximum" in r.getMessage()
+        r
+        for r in caplog.records
+        if r.name == "kiro_crew.update_ownership" and "maximum" in r.getMessage()
     ]
 
 
@@ -792,7 +806,16 @@ async def test_a_refused_relaunch_stays_up_says_so_once_and_backs_off(caplog):
     # then only the backoff's re-asks.
     assert drains["n"] == 2
     gaps = [b - a for a, b in zip(asked_at[1:], asked_at[2:])]
-    assert all(later > earlier for earlier, later in zip(gaps, gaps[1:]))
+    # The backoff DOUBLES each refusal round (``backoff = min(backoff * 2, cap)``), so the
+    # measured inter-recheck gaps must GROW -- not flatline, not shrink. We assert that as
+    # non-decreasing gaps PLUS an overall increase (the last gap strictly exceeds the first),
+    # rather than strict adjacency (``later > earlier`` for every pair). The intended gaps here
+    # are ``interval``-scaled (10ms, 20ms, 40ms, ...), at or below Windows' ~15.6ms system-timer
+    # granularity, so ``asyncio``'s wakeups snap adjacent small gaps to equal values on Windows
+    # and strict adjacency flakes there while the doubling schedule is correct. Non-decreasing +
+    # end-to-end growth still fails a flat or shrinking backoff, which is the real contract.
+    assert all(later >= earlier for earlier, later in zip(gaps, gaps[1:]))
+    assert gaps[-1] > gaps[0]
 
 
 @pytest.mark.asyncio
@@ -826,7 +849,16 @@ async def test_an_inconclusive_recheck_does_not_lift_a_refusal(caplog):
     assert len(_records(caplog, level=logging.CRITICAL)) == 1
     assert drains["n"] == 2
     gaps = [b - a for a, b in zip(asked_at[1:], asked_at[2:])]
-    assert all(later > earlier for earlier, later in zip(gaps, gaps[1:]))
+    # The backoff DOUBLES each refusal round (``backoff = min(backoff * 2, cap)``), so the
+    # measured inter-recheck gaps must GROW -- not flatline, not shrink. We assert that as
+    # non-decreasing gaps PLUS an overall increase (the last gap strictly exceeds the first),
+    # rather than strict adjacency (``later > earlier`` for every pair). The intended gaps here
+    # are ``interval``-scaled (10ms, 20ms, 40ms, ...), at or below Windows' ~15.6ms system-timer
+    # granularity, so ``asyncio``'s wakeups snap adjacent small gaps to equal values on Windows
+    # and strict adjacency flakes there while the doubling schedule is correct. Non-decreasing +
+    # end-to-end growth still fails a flat or shrinking backoff, which is the real contract.
+    assert all(later >= earlier for earlier, later in zip(gaps, gaps[1:]))
+    assert gaps[-1] > gaps[0]
 
 
 @pytest.mark.asyncio
@@ -980,7 +1012,9 @@ async def test_an_update_that_stayed_up_keeps_a_managed_gateway_up_without_a_che
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("standing", [False, True], ids=["first-gap", "lifting-a-refusal"])
-async def test_a_refusal_recorded_during_the_drain_is_seen_before_the_signal(caplog, standing, managed):
+async def test_a_refusal_recorded_during_the_drain_is_seen_before_the_signal(
+    caplog, standing, managed
+):
     """Read with no await before the signal, even right after a refusal was lifted."""
     from kiro_crew import update_ownership
 
@@ -1117,8 +1151,12 @@ async def test_a_turn_admitted_during_the_check_is_drained_before_the_signal():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("reentry_check", [None, lambda: _verdict("REENTERABLE")], ids=["no-check", "check"])
-async def test_a_wedged_turn_holds_the_signal_for_one_drain_budget_not_two(monkeypatch, reentry_check):
+@pytest.mark.parametrize(
+    "reentry_check", [None, lambda: _verdict("REENTERABLE")], ids=["no-check", "check"]
+)
+async def test_a_wedged_turn_holds_the_signal_for_one_drain_budget_not_two(
+    monkeypatch, reentry_check
+):
     """The drain after the check gets what the first drain left, nothing more."""
     from kiro_crew.dashboard import stale_asset_watchdog
 

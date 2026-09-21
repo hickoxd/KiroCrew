@@ -35,6 +35,7 @@ _SEATBELT_PROFILE = """\
 def _build_seatbelt_profile(
     sandbox_level: str = "strict",
     *,
+    gateway_publish: bool = False,
     extra_hidden_dirs: tuple[str, ...] = (),
     extra_visible_dirs: tuple[str, ...] = (),
     extra_private_dirs: tuple[str, ...] = (),
@@ -49,6 +50,7 @@ def _build_seatbelt_profile(
         _CREW_READONLY_LEAVES,
         _CREW_READONLY_TARGETS,
         _STANDARD_DIRS,
+        SandboxCeilingUnsealable,
         _crew_hidden_sandbox_targets,
         _hidden_path_contains_visible_path,
         _is_policy_cache_dir,
@@ -56,6 +58,8 @@ def _build_seatbelt_profile(
         _md_notebook_degraded_mask_dirs,
         _pod_os_home_targets,
         _private_window_spellings,
+        _push_verdict_masks_ssh,
+        _push_verdict_mirror_parents,
         _relocated_crew_targets,
         _relocated_policy_cache_dirs,
         _resolved_kiro_agents_targets,
@@ -84,6 +88,26 @@ def _build_seatbelt_profile(
         dirs = _sandbox_policy().strict_dirs()
     files = _CC_FILES if sandbox_level in ("cc", "strict") else []
     expose_files = _CC_EXPOSE_FILES if sandbox_level == "cc" else []
+    # Push-verdict activation is Linux-only. On macOS the agent child's git credential
+    # cannot be isolated from the child the way the Linux launcher isolates it: a file mask
+    # over the HTTPS credential stores and a ``process-exec*`` deny of the keychain helper by
+    # name are both bypassable, because any binary the child can run reaches the OS keychain
+    # over ``securityd`` Mach IPC, and the only Seatbelt rule that closes that -- a blanket
+    # ``(deny mach-lookup (global-name "com.apple.securityd"))`` -- also severs the agent
+    # CLI's own keychain sign-in and this process's Security.framework TLS trust evaluation.
+    # There is no middle rule. So rather than ship a mask the child can defeat, an activated
+    # agent spawn FAILS CLOSED here (``gateway_publish`` is exempt -- it resolves the mask
+    # False above and keeps its credential to perform the one judged publish). This narrows
+    # push-verdict activation to Linux; it removes nothing a macOS install had before this
+    # change, which never masked the agent at all.
+    if not gateway_publish and _push_verdict_masks_ssh():
+        raise SandboxCeilingUnsealable(
+            "push-verdict activation is not supported on macOS: the agent child's git "
+            "credential lives in the OS keychain, which no Seatbelt rule can withhold from "
+            "the child without also severing the agent's own keychain sign-in and TLS. "
+            "Refusing the spawn. (Activation is enforced on Linux, where the launcher "
+            "isolates the credential; the gateway-owned publish is unaffected.)"
+        )
     expose_abs = {os.path.join(home, f) for f in expose_files}
     # Caller-supplied read-only carve-outs (the enforced adapter's
     # ``~/.aws/config``). Folded into the SAME set the tier loop reads, not only
@@ -308,7 +332,12 @@ def _build_seatbelt_profile(
         rules.append(f'(deny file-write* (literal "{escaped}"))')
         rules.append(f'(deny file-link (literal "{escaped}"))')
 
-    # .ssh: deny all access except reading known_hosts (strict only)
+    # .ssh: deny all access except reading known_hosts (strict only). On macOS, push-verdict
+    # activation does NOT reach here -- an activated agent spawn fails closed at
+    # ``_build_seatbelt_profile``'s refusal above (activation is Linux-only), so there is no
+    # activated agent profile to mask. A non-strict, non-activated install keeps ``~/.ssh`` and
+    # the ssh-agent socket exactly as the base does; widening either is the operator's call, not
+    # this change's.
     ssh_guards: list[str] = []
     if sandbox_level == "strict":
         ssh_dir = os.path.join(home, ".ssh")
@@ -333,11 +362,19 @@ def _build_seatbelt_profile(
     # deny deliberately stays in force: a probe scratch dir never needs to mint
     # hardlinks, and the deny is what stops aliasing a sealed inode into the
     # writable window.
+    # The gateway-owned publish OWNS the push-verdict mirror tree, so for that spawn ALONE
+    # the sealed mirror leaf becomes a validated write carve-out: its parent joins the
+    # carveable set and drops out of the readonly subtree guards. Agent spawns leave
+    # ``gateway_publish`` False and the mirror stays sealed for them.
+    mirror_carveable = _push_verdict_mirror_parents() if gateway_publish else []
     for spelling in _writable_carveout_spellings(
         extra_writable_dirs,
-        subtree_guards=masked_targets + readonly_targets + extra_hidden_targets + ssh_guards,
+        subtree_guards=masked_targets
+        + [path for path in readonly_targets if path not in set(mirror_carveable)]
+        + extra_hidden_targets
+        + ssh_guards,
         literal_guards=ancestor_guards + [os.path.join(home, f) for f in files],
-        carveable_parents=runtime_parents,
+        carveable_parents=runtime_parents + mirror_carveable,
     ):
         escaped = spelling.replace('"', '\\"')
         rules.append(f'(allow file-write* (subpath "{escaped}"))')

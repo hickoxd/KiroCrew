@@ -260,7 +260,9 @@ from kiro_crew.dashboard.server_runtime.maintenance import (  # noqa: F401
 )
 from kiro_crew.dashboard.server_runtime.mcp_routes import (  # noqa: F401
     _deferred,
+    _deferred_push_verdict,
     _deferred_work_ledger,
+    _push_verdict_boot_import,
     _register_mcp_routes,
 )
 from kiro_crew.dashboard.server_runtime.middleware_chain import (  # noqa: F401
@@ -543,6 +545,14 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # ever posts to it. The handler re-asserts loopback itself because a
         # ``local_only=False`` deployment reclassifies strict paths as mixed.
         "/api/computer-use/frame",
+        # Push verdict: the prepare-pr guard's gateway-side entry point. The MCP tool
+        # presents a REQUEST here and the gateway runs the stale-base check itself, so
+        # this route is the only writer of the verdict state the publish floor reads.
+        # STRICT (not mixed): no browser calls it, and a cookie fall-through would let a
+        # page's request stand in for the agent's session -- which is the one thing the
+        # session keying exists to prevent. The handler re-asserts loopback itself
+        # because a ``local_only=False`` deployment reclassifies strict paths as mixed.
+        "/api/push-verdict/run",
         "/api/session-keepalive",
         # Session directives: the provider-neutral leg of the directive
         # protocol. STRICT for the same reasons as its sibling above — the

@@ -85,7 +85,7 @@ _BASE_NAMES = frozenset("""
         _arm_secondary_listener_guard _armed_unattended_loops _asset_cache_control
         _audit_denied _autonudge_get _bind_once _claimed_dashboard_slots
         _clear_override_derived_trust _cookie_port_from_host
-        _crewmate_prune_gate_holds_path _deferred _deferred_work_ledger
+        _crewmate_prune_gate_holds_path _deferred _deferred_push_verdict _deferred_work_ledger
         _dispatch_override_expiry_notification _dispatch_owner_dm _dist_file_handler
         _dm_owner _export_bound_port _extra_frame_ancestors
         _finalize_asset_cache_control _holds_every_loopback_family
@@ -99,7 +99,7 @@ _BASE_NAMES = frozenset("""
         _make_host_validation_middleware _mixed_internal_api_paths
         _note_listener_sidecar _notify_owner_channels _notify_slack_override_expired
         _notify_unattended_expiry _override_expiry_dm_text _own_host_warm_done
-        _pending_skill_notification _precompute_telemetry
+        _pending_skill_notification _precompute_telemetry _push_verdict_boot_import
         _prune_browser_snapshots_loop _reconcile_listener_publication
         _register_browser_install_cleanup _register_browser_view_cleanup
         _register_config_watch _register_connections_warm_lifecycle
@@ -205,7 +205,13 @@ _BASE_OWNERS: dict[str, tuple[str, ...]] = {
         _kick_local_decision_model _kick_session_search_index _own_host_warm_done
         _register_connections_warm_lifecycle _register_own_host_warm
         """.split()),
-    "mcp_routes": ("_deferred", "_deferred_work_ledger", "_register_mcp_routes"),
+    "mcp_routes": (
+        "_deferred",
+        "_deferred_push_verdict",
+        "_deferred_work_ledger",
+        "_push_verdict_boot_import",
+        "_register_mcp_routes",
+    ),
     "middleware_chain": ("_tailnet_origin_enabled",),
     "owner_notices": ("_dispatch_owner_dm", "_dm_owner", "_notify_owner_channels"),
     "prevent_sleep": (
@@ -282,7 +288,7 @@ _PHASE_OWNERS: dict[str, tuple[str, ...]] = {
 #: SHA-256 of the sorted ``"<name> <kind> <signature>"`` lines of every name in
 #: ``_BASE_OWNERS``, captured from the one-module file before the split: each moved
 #: name keeps the kind and signature it had there.
-_BASE_SHAPE_DIGEST = "534c66ed75e197e3cff4a5d7488aa541ca7ee0da864fa6cce3e1418926a9063c"
+_BASE_SHAPE_DIGEST = "9bc5be029f8143e48c2e9c3c648edb5e2f86801800b4fcb8a4f7eafc6e8dfd7f"
 
 #: Definitions that stay in the server module: the two entrypoints, and the helpers
 #: repository guards read in ``server.py`` by path or that own module state there --
@@ -364,7 +370,7 @@ def _run_child(tmp_path: Path, script: str, *args: str) -> None:
 def test_every_name_the_facade_bound_at_the_base_still_resolves() -> None:
     """Tests and other modules read private names off the server as well as public
     ones, so every module-level binding survives the split."""
-    assert len(_BASE_NAMES) == 326
+    assert len(_BASE_NAMES) == 328
     assert sorted(name for name in _BASE_NAMES if not hasattr(server, name)) == []
 
 
@@ -453,7 +459,7 @@ _LAZY_IMPORTS = {
     "kiro_crew.config.resolution": "DEGRADED_WHOLE_CONFIG",
     "kiro_crew.connections.warm": "scavenge_warm_mint_artifacts shutdown_warm_mint",
     "kiro_crew.dashboard.chat": "_run_chat",
-    "kiro_crew.dashboard.handlers": "wf_handlers work_ledger",
+    "kiro_crew.dashboard.handlers": "wf_handlers work_ledger push_verdict",
     "kiro_crew.dashboard.handlers.ask_question": (
         "api_ask_question api_ask_question_answer api_ask_question_dismiss "
         "api_ask_question_pending"
@@ -483,7 +489,8 @@ _LAZY_IMPORTS = {
     "kiro_crew.hooks": "set_builtin_app_agents set_builtin_app_mcp_servers set_builtin_app_names",
     "kiro_crew.memory": "MemoryStore",
     "kiro_crew.metrics": "_gauges",
-    "kiro_crew.security": "redact_credentials redact_exfiltration_urls",
+    "kiro_crew.security": "redact_credentials redact_exfiltration_urls _pv",
+    "asyncio": "asyncio",
     "kiro_crew.sel": "sel",
     "kiro_crew.stt": "engine stt_models",
     "kiro_crew.subagent": "_available_memory_gb",
@@ -508,7 +515,7 @@ def test_the_lazy_imports_stay_inside_the_functions_that_need_them() -> None:
                     for alias in node.names:
                         local.setdefault(alias.asname or alias.name, set()).add(alias.name)
     assert local == {name: {module} for name, module in expected.items()}
-    assert len(expected) == 76
+    assert len(expected) == 79
 
 
 def test_a_star_import_carries_the_moved_public_names(tmp_path: Path) -> None:
@@ -561,12 +568,12 @@ def test_every_moved_name_is_one_object_in_its_owner() -> None:
     strays = [f"{o}:{n}" for o, n in placed if getattr(server, n) is not vars(_owner(o)).get(n)]
     assert strays == []
     names = [name for _, name in placed]
-    assert len(names) == len(set(names)) == 90 + 23
+    assert len(names) == len(set(names)) == 92 + 23
 
 
 def test_the_moved_names_keep_their_base_shapes() -> None:
     lines = sorted(f"{name} {_shape(getattr(server, name))}" for name in _MOVED)
-    assert len(lines) == 90
+    assert len(lines) == 92
     digest = hashlib.sha256("\n".join(lines).encode()).hexdigest()
     assert digest == _BASE_SHAPE_DIGEST, "\n".join(lines)
 
@@ -610,7 +617,7 @@ def test_every_base_definition_is_in_exactly_one_place() -> None:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
     }
     assert defined == set(_FACADE_DEFS)
-    assert len(defined | _MOVED) == len(defined) + len(_MOVED) == 101
+    assert len(defined | _MOVED) == len(defined) + len(_MOVED) == 103
 
 
 def test_the_owners_log_as_the_facade() -> None:
@@ -1335,6 +1342,7 @@ _API_CHAIN = (
 #: route slices and handler modules register are not the server's and are left out.
 _DASHBOARD_HOOKS = {
     "on_startup": (
+        "_push_verdict_boot_import",
         "_hooks_startup",
         "_contrib_startup",
         "_stt_startup",
@@ -1368,7 +1376,7 @@ _DASHBOARD_HOOKS = {
     "on_response_prepare": ("_finalize_asset_cache_control",),
 }
 _API_HOOKS = {
-    "on_startup": ("_stt_startup", "_own_host_warm"),
+    "on_startup": ("_push_verdict_boot_import", "_stt_startup", "_own_host_warm"),
     "on_cleanup": (
         "_kiro_prerequisite_shutdown",
         "_kas_login_shutdown",
@@ -1399,7 +1407,7 @@ _DASHBOARD_BOOT = tuple("""
     wire_session_subagent_probe _wire_tunnel_shutdown _wire_status_delta_sink
     register_status_delta_sink _precompute_telemetry current_context
     _register_mcp_routes _deferred _deferred setup_spawn_resume_routes
-    _deferred_work_ledger _deferred_work_ledger _deferred_work_ledger
+    _deferred_push_verdict _deferred_work_ledger _deferred_work_ledger _deferred_work_ledger
     _deferred_work_ledger _deferred_work_ledger _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
@@ -1421,7 +1429,7 @@ _DASHBOARD_BOOT = tuple("""
     _register_instances_hooks _register_browser_install_cleanup
     _register_browser_view_cleanup _register_connections_warm_lifecycle
     _register_workflow_lifecycle _register_crewmate_prune_gate
-    _register_unix_socket_cleanup build_hardened_runner on_gateway_startup
+    _register_unix_socket_cleanup build_hardened_runner _push_verdict_boot_import on_gateway_startup
     init_hook_reconciler async_safe_context_call current_context _arm_listener_guard
     _kick_crewmate_prune subprocess_executor _start_unix_site _resolved_bound_port
     _start_secondary_loopback_site subprocess_executor _note_listener_sidecar
@@ -1456,7 +1464,7 @@ _API_BOOT = tuple("""
     warm_auth_singletons warm_sel_singleton make_route_latency_middleware
     _mixed_internal_api_paths safe_context_call current_context token_auth_middleware
     _register_mcp_routes _deferred _deferred setup_spawn_resume_routes
-    _deferred_work_ledger _deferred_work_ledger _deferred_work_ledger
+    _deferred_push_verdict _deferred_work_ledger _deferred_work_ledger _deferred_work_ledger
     _deferred_work_ledger _deferred_work_ledger _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
@@ -1464,7 +1472,7 @@ _API_BOOT = tuple("""
     _register_config_watch _register_prevent_sleep_shutdown
     _register_listener_guard_shutdown _register_browser_install_cleanup
     _register_connections_warm_lifecycle _register_workflow_lifecycle
-    _register_unix_socket_cleanup build_hardened_runner bind_address_for _start_site
+    _register_unix_socket_cleanup build_hardened_runner _push_verdict_boot_import bind_address_for _start_site
     _arm_listener_guard _export_bound_port _resolved_bound_port _start_unix_site
     _resolved_bound_port _resolved_bound_host _start_secondary_loopback_site
     subprocess_executor _resolved_bound_host _resolved_bound_host _note_listener_sidecar
@@ -1658,8 +1666,8 @@ def _routes(app: web.Application) -> list[tuple[str, str, str]]:
 #: SHA-256 of the MCP route table's ``"<method> <path> <handler>"`` rows in
 #: registration order, and their count. The table is shared by both entrypoints, so a
 #: route added to it on purpose updates these with it.
-_MCP_TABLE_ROWS = 232
-_MCP_TABLE_DIGEST = "e2d49d27dbc55c44b0d0614e408b87cd27d0dd1e24e285a8818c1673ef50fb64"
+_MCP_TABLE_ROWS = 233
+_MCP_TABLE_DIGEST = "8aba32885a10f26a46d9b26ed9da12bdca3e588294cecae953e904b40769f1f1"
 
 
 def test_the_mcp_route_table_keeps_its_rows_and_order() -> None:

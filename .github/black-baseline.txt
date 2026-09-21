@@ -465,7 +465,6 @@ test/test_dashboard_ws_task_tracking.py
 test/test_dashboard_yolo_startup.py
 test/test_delete_message.py
 test/test_denied_commands_api.py
-test/test_denied_commands_authority.py
 test/test_denied_commands_hooks.py
 test/test_dependencies.py
 test/test_dependency_ledger.py
@@ -837,7 +836,6 @@ test/test_source_providers_comment_guard.py
 test/test_source_summary.py
 test/test_spawn_list_redaction.py
 test/test_stable_release_gate.py
-test/test_stale_asset_watchdog.py
 test/test_steering_api.py
 test/test_stop_kill_cancel.py
 test/test_streaming_meta_redaction.py

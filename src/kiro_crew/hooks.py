@@ -193,6 +193,7 @@ from kiro_crew.platform.tool_paths import (  # noqa: F401  (re-exported for call
     target_paths,
 )
 from kiro_crew.security import (  # noqa: F401 - the path owners read these
+    PushVerdictActivation,
     audit_bash_exfiltration,
     is_sensitive_bash_command,
     is_sensitive_path,
@@ -883,6 +884,7 @@ class HookManager:
         spawn_target: str = "",
         resolved_agent: str = "",
         classifier_only: bool = False,
+        push_verdict_activation: "PushVerdictActivation | None" = None,
     ) -> ToolHookResult:
         """Check if a tool should be auto-approved, denied, or handled normally.
 
@@ -1306,6 +1308,8 @@ class HookManager:
                 self._config.auto_deny_tools,
                 denied_regexes=denied_regexes,
                 reason_notes=denied_notes,
+                session_key=session_key,
+                activation=push_verdict_activation,
             )
             if reason:
                 return ToolHookResult.deny(reason)
