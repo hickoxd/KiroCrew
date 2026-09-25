@@ -6213,6 +6213,16 @@
       "close_failed": "Impossibile arrestare la shell di questo terminale sul server. Verrà ripulita automaticamente.",
       "closing_terminal": "Chiusura del terminale…"
     },
+    "tabCloseMenu": {
+      "close_and_discard_button": "Ignora e chiudi i terminali",
+      "close_terminals_body_one": "{{count}} terminale verrà chiuso e la sua shell in esecuzione verrà arrestata.",
+      "close_terminals_body_many": "{{count}} terminali verranno chiusi e le loro shell in esecuzione verranno arrestate.",
+      "close_terminals_body_other": "{{count}} terminali verranno chiusi e le loro shell in esecuzione verranno arrestate.",
+      "close_terminals_button": "Chiudi i terminali",
+      "close_terminals_title": "Chiudere i terminali?",
+      "last_copy_files_lost": "Questi file non sono su disco; chiuderli elimina la loro unica copia rimasta.",
+      "unsaved_files_lost": "Questi file contengono modifiche non salvate che andranno perse."
+    },
     "chatInput": {
       "auto_jev": "Automatico (Jev)",
       "auto_jev_desc": "Lascia scegliere a Jev: agire ora o eseguire dopo",

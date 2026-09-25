@@ -51,6 +51,12 @@ function openMenu(tabId: string) {
   })
 }
 
+/** A batch that stops more than one shell asks first; answer it. */
+async function confirmBatch(shells: number) {
+  expect(await screen.findByText(`${shells} terminals will close and their running shells will stop.`)).toBeInTheDocument()
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Close terminals' })) })
+}
+
 beforeEach(() => {
   __resetBottomTerminal()
   deleteTerminal.mockReset()
@@ -76,7 +82,9 @@ describe('terminal tab close menu', () => {
     expect(screen.getByRole('menuitem', { name: 'Close tabs to the right' })).toBeInTheDocument()
     expect(screen.getByRole('menuitem', { name: 'Close all tabs' })).toBeInTheDocument()
 
+    // One shell, like the × control: no confirmation.
     fireEvent.click(screen.getByRole('menuitem', { name: 'Close tabs to the right' }))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
 
     await waitFor(() => {
       expect(screen.queryByRole('tab', { name: third })).not.toBeInTheDocument()
@@ -96,6 +104,7 @@ describe('terminal tab close menu', () => {
     expect(screen.getByRole('menuitem', { name: 'Close tabs to the right' })).toHaveAttribute('data-disabled')
 
     fireEvent.click(screen.getByRole('menuitem', { name: 'Close other tabs' }))
+    await confirmBatch(2)
     await waitFor(() => {
       expect(screen.getAllByRole('tab')).toHaveLength(1)
     })
@@ -105,6 +114,49 @@ describe('terminal tab close menu', () => {
 
     openMenu(third)
     expect(screen.getByRole('menuitem', { name: 'Close other tabs' })).toHaveAttribute('data-disabled')
+  })
+
+  it('keeps every shell when a multi-terminal close is cancelled', async () => {
+    const ids = seedTabs(3)
+    renderWithProviders(<TerminalTabsView variant="dock" />)
+
+    openMenu(ids[0])
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Close all tabs' }))
+    expect(await screen.findByText('3 terminals will close and their running shells will stop.')).toBeInTheDocument()
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Cancel' })) })
+
+    expect(screen.getAllByRole('tab')).toHaveLength(3)
+    expect(deleteTerminal).not.toHaveBeenCalled()
+    expect(disposeTerminal).not.toHaveBeenCalled()
+  })
+
+  it('closes only the tabs that still exist when the confirmation is answered', async () => {
+    const [first, second, third] = seedTabs(3)
+    renderWithProviders(<TerminalTabsView variant="dock" />)
+
+    openMenu(first)
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Close all tabs' }))
+    await screen.findByRole('button', { name: 'Close terminals' })
+    act(() => { addTab() })
+    await confirmBatch(3)
+
+    const { result, unmount } = renderHook(() => useBottomTerminal())
+    expect(result.current.tabs.map(tab => tab.id)).not.toContain(first)
+    expect(result.current.tabs).toHaveLength(1)
+    unmount()
+    expect(deleteTerminal.mock.calls.map(call => call[0])).toEqual([first, second, third])
+  })
+
+  // Rename (from the chip) and the close actions are one menu, not two
+  // triggers competing for the same right-click.
+  it('lists rename and the close actions in one menu', () => {
+    const [first] = seedTabs(2)
+    renderWithProviders(<TerminalTabsView variant="dock" />)
+
+    openMenu(first)
+    expect(screen.getAllByRole('menu')).toHaveLength(1)
+    expect(screen.getByRole('menuitem', { name: 'Rename' })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: 'Close all tabs' })).toBeInTheDocument()
   })
 
   // Touch shares one hold between reordering and the menu: the hold arms the
@@ -157,6 +209,7 @@ describe('terminal tab close menu', () => {
 
     openMenu(first)
     fireEvent.click(screen.getByRole('menuitem', { name: 'Close all tabs' }))
+    await confirmBatch(2)
 
     expect(screen.getByRole('tab', { name: first })).toHaveAttribute('aria-busy', 'true')
     expect(screen.getByRole('tab', { name: second })).toHaveAttribute('aria-busy', 'true')
@@ -186,6 +239,7 @@ describe('terminal tab close menu', () => {
 
     openMenu(first)
     fireEvent.click(screen.getByRole('menuitem', { name: 'Close all tabs' }))
+    await confirmBatch(2)
 
     expect(disposeConnection.mock.calls.map(call => call[0])).toEqual([first, second])
     expect(disposedWhenDeleted).toEqual([2, 2])
@@ -202,6 +256,7 @@ describe('terminal tab close menu', () => {
 
     openMenu(first)
     fireEvent.click(screen.getByRole('menuitem', { name: 'Close all tabs' }))
+    await confirmBatch(2)
     expect(screen.getByRole('tab', { name: first })).toHaveAttribute('aria-busy', 'true')
 
     view.unmount()

@@ -6213,6 +6213,16 @@
       "close_failed": "Não foi possível encerrar o shell deste terminal no servidor. Ele será limpo automaticamente.",
       "closing_terminal": "Fechando terminal…"
     },
+    "tabCloseMenu": {
+      "close_and_discard_button": "Descartar e fechar terminais",
+      "close_terminals_body_one": "{{count}} terminal será fechado e seu shell em execução será encerrado.",
+      "close_terminals_body_many": "{{count}} terminais serão fechados e seus shells em execução serão encerrados.",
+      "close_terminals_body_other": "{{count}} terminais serão fechados e seus shells em execução serão encerrados.",
+      "close_terminals_button": "Fechar terminais",
+      "close_terminals_title": "Fechar terminais?",
+      "last_copy_files_lost": "Estes arquivos não estão no disco; fechá-los descarta sua única cópia restante.",
+      "unsaved_files_lost": "Estes arquivos têm alterações não salvas que serão perdidas."
+    },
     "chatInput": {
       "auto_jev": "Automático (Jev)",
       "auto_jev_desc": "Deixe o Jev escolher: agir agora ou executar depois",

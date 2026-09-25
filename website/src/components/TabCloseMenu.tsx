@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
 import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem } from './ui/context-menu'
+import type { ConfirmOptions } from './ConfirmDialog'
 import { i18nT } from '../i18n/t'
 
 /**
@@ -15,6 +16,81 @@ import { i18nT } from '../i18n/t'
 export function openTabCloseMenu(e: PointerEvent, target: HTMLElement): void {
   const tab = target.matches('[role="tab"]') ? target : target.querySelector<HTMLElement>('[role="tab"]') ?? target
   tab.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: e.clientX, clientY: e.clientY }))
+}
+
+/** Dirty files listed by name before the rest collapse into "N more". */
+const LISTED_DIRTY_FILES = 5
+
+export interface DirtyFile {
+  name: string
+  path?: string
+}
+
+/**
+ * The confirmation a close batch needs, or `null` when it needs none. Three
+ * things in a batch cannot be taken back: unsaved file edits, which are named
+ * so the reader knows what is lost; a clean file tab whose on-disk copy is gone
+ * or could not be read, whose buffer is then the only remaining copy; and
+ * running shells, counted once the batch stops more than one. A single shell is
+ * not asked about, matching its × control. `lastCopyFiles` carries the clean
+ * tabs a disk preflight found missing or unverifiable (see `handleCloseTabs`),
+ * so the batch no longer skips `MarkdownPanel`'s last-copy guard for them.
+ */
+export function batchCloseConfirm(
+  dirtyFiles: readonly DirtyFile[],
+  shellCount: number,
+  lastCopyFiles: readonly DirtyFile[] = [],
+): ConfirmOptions | null {
+  const stopsShells = shellCount > 1
+  if (dirtyFiles.length === 0 && lastCopyFiles.length === 0 && !stopsShells) return null
+  const listed = dirtyFiles.slice(0, LISTED_DIRTY_FILES)
+  const unlisted = dirtyFiles.length - listed.length
+  const listedCopies = lastCopyFiles.slice(0, LISTED_DIRTY_FILES)
+  const unlistedCopies = lastCopyFiles.length - listedCopies.length
+  const losesContent = dirtyFiles.length > 0 || lastCopyFiles.length > 0
+  return {
+    title: losesContent
+      ? i18nT('components.markdownPanel.discard_unsaved_changes')
+      : i18nT('components.tabCloseMenu.close_terminals_title'),
+    confirmLabel: losesContent
+      ? (stopsShells
+        ? i18nT('components.tabCloseMenu.close_and_discard_button')
+        : i18nT('components.markdownPanel.discard_changes_button'))
+      : i18nT('components.tabCloseMenu.close_terminals_button'),
+    body: (
+      <div className="space-y-2">
+        {dirtyFiles.length > 0 && (
+          <div>
+            <p>{i18nT('components.tabCloseMenu.unsaved_files_lost')}</p>
+            <ul className="mt-1 list-none p-0 space-y-0.5">
+              {listed.map((file, i) => (
+                <li key={`${file.path ?? file.name}-${i}`} title={file.path} translate="no" data-i18n-opaque=""
+                  className="truncate font-mono text-[12px] text-text">
+                  {file.name}
+                </li>
+              ))}
+              {unlisted > 0 && <li className="text-[12px] text-muted">{i18nT('app.n_more', { count: unlisted })}</li>}
+            </ul>
+          </div>
+        )}
+        {lastCopyFiles.length > 0 && (
+          <div>
+            <p>{i18nT('components.tabCloseMenu.last_copy_files_lost')}</p>
+            <ul className="mt-1 list-none p-0 space-y-0.5">
+              {listedCopies.map((file, i) => (
+                <li key={`${file.path ?? file.name}-${i}`} title={file.path} translate="no" data-i18n-opaque=""
+                  className="truncate font-mono text-[12px] text-text">
+                  {file.name}
+                </li>
+              ))}
+              {unlistedCopies > 0 && <li className="text-[12px] text-muted">{i18nT('app.n_more', { count: unlistedCopies })}</li>}
+            </ul>
+          </div>
+        )}
+        {stopsShells && <p>{i18nT('components.tabCloseMenu.close_terminals_body', { count: shellCount })}</p>}
+      </div>
+    ),
+  }
 }
 
 export interface TabCloseActions {

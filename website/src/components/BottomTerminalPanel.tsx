@@ -11,7 +11,8 @@ import {
 import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator } from './ui/context-menu'
 import { Input } from './ui'
 import { useTranslation } from 'react-i18next'
-import { TabCloseMenuItems, openTabCloseMenu, type TabCloseActions } from './TabCloseMenu'
+import { TabCloseMenuItems, batchCloseConfirm, openTabCloseMenu, type TabCloseActions } from './TabCloseMenu'
+import { useConfirm } from './ConfirmDialog'
 import CliPanel, { disposeTerminalSession, useDeleteTerminalSession } from './CliPanel'
 import ErrorNotice from './ErrorNotice'
 import { useTerminalTitle, disposeTerminalConnection } from '../utils/terminalRegistry'
@@ -346,6 +347,11 @@ export function TerminalTabsView({ variant }: { variant: 'dock' | 'popout' }) {
   // closing the LAST tab unmounts this strip before a delayed rejection arrives.
   const del = useDeleteTerminalSession()
   const [closingIds, setClosingIds] = useState<ReadonlySet<string>>(() => new Set())
+  const { confirm, confirmDialog, confirmOpen } = useConfirm()
+  // The strip stays live behind the confirm, so a batch resolves its targets
+  // against the tabs as they are when the answer arrives.
+  const tabsRef = useRef(tabs)
+  tabsRef.current = tabs
   const mountedRef = useRef(true)
   const pendingPopoutCloseRef = useRef<PendingPopoutClose | null>(null)
   // Chips with an open name editor. A count rather than an id: a second
@@ -404,14 +410,21 @@ export function TerminalTabsView({ variant }: { variant: 'dock' | 'popout' }) {
    *  window spawns a replacement PTY that the batch never asked for and no
    *  longer has a tab to close, leaving it to the server's orphan reaper.
    *  Releasing first clears the reconnect timer, so the only shells the batch
-   *  can leave behind are ones whose DELETE itself failed. */
-  const closeTabs = useCallback((ids: readonly string[]) => {
-    if (closingIds.size > 0) return
+   *  can leave behind are ones whose DELETE itself failed.
+   *
+   *  Every tab is a running shell, so a batch of more than one asks first
+   *  (`batchCloseConfirm`); a single close does not, like its × control. */
+  const closeTabs = useCallback(async (ids: readonly string[]) => {
+    if (closingIds.size > 0 || confirmOpen) return
     const requested = new Set(ids)
-    const targets = tabs.filter(tab => requested.has(tab.id))
+    const asked = batchCloseConfirm([], tabs.filter(tab => requested.has(tab.id)).length)
+    if (asked && !await confirm(asked)) return
+    if (!mountedRef.current || pendingPopoutCloseRef.current) return
+    const current = tabsRef.current
+    const targets = current.filter(tab => requested.has(tab.id))
     if (targets.length === 0) return
 
-    if (variant === 'popout' && targets.length === tabs.length) {
+    if (variant === 'popout' && targets.length === current.length) {
       pendingPopoutCloseRef.current = { targets, finished: false }
       setClosingIds(new Set(targets.map(tab => tab.id)))
       for (const tab of targets) disposeTerminalConnection(tab.id)
@@ -424,7 +437,7 @@ export function TerminalTabsView({ variant }: { variant: 'dock' | 'popout' }) {
 
     for (const tab of targets) del.mutate(tab.id)
     finishTargets(targets)
-  }, [closingIds.size, del, finishPendingPopoutClose, finishTargets, tabs, variant])
+  }, [closingIds.size, confirm, confirmOpen, del, finishPendingPopoutClose, finishTargets, tabs, variant])
 
   /** Detach the WHOLE panel into its own browser window. Order matters, twice
    *  over: `openPopout` must run synchronously in the click (window.open needs
@@ -451,6 +464,7 @@ export function TerminalTabsView({ variant }: { variant: 'dock' | 'popout' }) {
           manually closed mid-wait, cleanup still clears persisted tabs. In the
           dock the root renders it. */}
       {variant === 'popout' && <TerminalCloseErrorNotice />}
+      {confirmDialog}
       {/* Tab strip — same aesthetics as the activity-bar strip; drag chips
           horizontally to reorder (framer Reorder). */}
       <div className="flex items-center gap-1.5 h-10 shrink-0 pl-1 pr-1.5">
