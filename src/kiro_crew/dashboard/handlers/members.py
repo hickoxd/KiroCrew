@@ -71,15 +71,76 @@ _SEQ_NO_LOG = 0
 #: written as literals at each exit.
 _SEQ_UNATTRIBUTABLE = -1
 
+#: The most contributed-value bytes a single roster ROW carries. A granted app
+#: may publish up to ``MAX_PROJECTION_KEYS_PER_APP_UNIT`` keys of
+#: ``MAX_PROJECTION_VALUE_BYTES`` each; shipping all of them on every roster row
+#: makes the list response O(apps x keys x value size) and makes the egress
+#: redaction walk the whole payload. The list only needs enough to paint the
+#: card; the drawer serves a member's full contributed values from its own route.
+#: A key whose value would push the row past this cap is dropped from the LIST
+#: block (not from the store) so the roster stays bounded regardless of how much
+#: a contributor published.
+_ROSTER_CONTRIBUTED_BYTES_CAP = 64 * 1024
+
+
+def _cap_contributed_bytes(block: dict) -> dict:
+    """Drop contributed keys from a roster *block* once their summed value bytes
+    exceed :data:`_ROSTER_CONTRIBUTED_BYTES_CAP`.
+
+    Operates on the already roster-narrowed block. The roster value itself is a
+    built-in key (not in ``seqs``) and is never dropped; only contributed keys
+    (those carried in ``seqs``) are capped, smallest-first so a row keeps as many
+    whole cards as fit. The matching ``seqs``/``stateVersions``/``schemas``
+    entries are dropped with their key so the client never sees a value without
+    its ordering pair.
+    """
+    import json as _json
+
+    seqs = block.get("seqs")
+    if not isinstance(seqs, dict) or not seqs:
+        return block
+    values = block.get("values")
+    if not isinstance(values, dict):
+        return block
+    sized = sorted(
+        (k for k in seqs if k in values),
+        key=lambda k: len(_json.dumps(values[k], ensure_ascii=False, default=str)),
+    )
+    budget = _ROSTER_CONTRIBUTED_BYTES_CAP
+    dropped: list[str] = []
+    for k in sized:
+        cost = len(_json.dumps(values[k], ensure_ascii=False, default=str))
+        if cost <= budget:
+            budget -= cost
+        else:
+            dropped.append(k)
+    for k in dropped:
+        values.pop(k, None)
+        for name in ("seqs", "stateVersions", "schemas"):
+            sub = block.get(name)
+            if isinstance(sub, dict):
+                sub.pop(k, None)
+    return block
+
 
 def _roster_only(snap: dict) -> dict:
-    """*snap* narrowed to the one view a roster ROW renders.
+    """*snap* narrowed to what a roster ROW renders.
 
     The list paints one thing per member -- the roster line -- while the activity,
     wake and driving views belong to the drawer, which opens for a single member at
     a time and reads them from that member's own route. Shipping all four on the
     list makes every row carry three views nothing on it reads, and the cost of
     each is the fold it walks.
+
+    A CONTRIBUTED row is painted on the list row too, so it stays: the protocol puts
+    it in the same ``values`` map as the built-in views precisely so the client needs
+    no second path for it, and narrowing to the built-in roster view alone would drop
+    every card an installed app contributes. ``seqs`` names exactly those keys --
+    a built-in snapshot never writes it and the contributed pass always does -- so
+    which keys to keep is read off the block rather than guessed from a key's shape.
+    Their ``seqs``, ``stateVersions`` and ``schemas`` ride along narrowed to the same
+    keys, because a contributed row orders on (stateVersion, seq) and a client given
+    the value without the pair cannot tell a deletion from a stale frame.
 
     ``asOfSeq`` is carried through unchanged because it is a property of the LOG,
     not of the subset: the client seeds each key at that sequence under its
@@ -89,16 +150,33 @@ def _roster_only(snap: dict) -> dict:
     """
     from kiro_crew.eventlog import types as eventlog_types
 
-    values = snap.get("values", {}) if isinstance(snap, dict) else {}
-    roster = values.get(eventlog_types.PROJ_ROSTER) if isinstance(values, dict) else None
-    return {
-        "asOfSeq": (
-            snap.get("asOfSeq", _SEQ_UNATTRIBUTABLE)
-            if isinstance(snap, dict)
-            else _SEQ_UNATTRIBUTABLE
-        ),
-        "values": {} if roster is None else {eventlog_types.PROJ_ROSTER: roster},
-    }
+    if not isinstance(snap, dict):
+        return {"asOfSeq": _SEQ_UNATTRIBUTABLE, "values": {}}
+
+    values = snap.get("values")
+    values = values if isinstance(values, dict) else {}
+    seqs = snap.get("seqs")
+    seqs = seqs if isinstance(seqs, dict) else {}
+
+    kept: dict = {}
+    roster = values.get(eventlog_types.PROJ_ROSTER)
+    if roster is not None:
+        kept[eventlog_types.PROJ_ROSTER] = roster
+    contributed = [key for key in values if key in seqs]
+    for key in contributed:
+        kept[key] = values[key]
+
+    block: dict = {"asOfSeq": snap.get("asOfSeq", _SEQ_UNATTRIBUTABLE), "values": kept}
+    if contributed:
+        block["seqs"] = {key: seqs[key] for key in contributed}
+        for name in ("stateVersions", "schemas"):
+            sub = snap.get(name)
+            if not isinstance(sub, dict):
+                continue
+            narrowed = {key: sub[key] for key in contributed if key in sub}
+            if narrowed:
+                block[name] = narrowed
+    return block
 
 
 def _logged_slugs(svc) -> set[str]:
@@ -357,6 +435,32 @@ def _slot_has_unflushed_rows(slot: object) -> bool:
     return bool(
         pending or getattr(slot, "_pending_rewrite", False) or getattr(slot, "_dirty_flag", False)
     )
+
+
+def _contributor_may_publish(app: str, key: str) -> bool:
+    """Whether *app* may still publish projection *key*, so its row may render.
+
+    Per KEY, not per app: a manifest narrowed to fewer keys still declares
+    contributions, so an app-level check would keep rendering a key the app no
+    longer owns. This asks the same question the write path asks, so a row cannot
+    be readable on terms the writer would be refused.
+
+    Deferred import: ``eventlog.grants`` pulls in the apps manager and the members
+    layer, and this is called per contributed row on the roster read. ``grants``
+    keeps its own short-lived cache, so this is not a manifest read per row.
+
+    Deny-safe. A lookup that fails HIDES the row rather than showing it: a rendered
+    row is authority the drawer displays, so showing one an app may not own is
+    worse than hiding one that will reappear on the next read.
+    """
+    try:
+        from kiro_crew.eventlog.grants import may_publish
+        from kiro_crew.eventlog.service import UNIT_KIND as _unit_kind
+
+        return may_publish(app, _unit_kind, key)
+    except Exception:
+        logger.debug("contributor publish check failed for %r/%r", app, key, exc_info=True)
+        return False
 
 
 async def api_members(request: web.Request) -> web.Response:
@@ -685,9 +789,11 @@ async def api_members(request: web.Request) -> web.Response:
 
     def _project_rows() -> dict[str, dict]:
         from kiro_crew import eventlog_hooks
-        from kiro_crew.eventlog.service import get_service
+        from kiro_crew.eventlog.contrib import get_store
+        from kiro_crew.eventlog.service import UNIT_KIND, get_service
 
         svc = get_service()
+        store = get_store()
         out: dict[str, dict] = {}
         # This map is keyed by SLUG while the roster is keyed by row, and a slug is
         # a lossy fold, so two rows can land on one key. Whichever row is projected
@@ -831,58 +937,123 @@ async def api_members(request: web.Request) -> web.Response:
             except Exception:
                 logger.debug("member projections failed for %r", slug, exc_info=True)
                 out[slug] = {"asOfSeq": _SEQ_UNATTRIBUTABLE, "values": {}}
-        return out
+            # Contributed rows sit in the SAME `values` map as the built-in keys,
+            # so a client needs no second code path to receive them (contribution
+            # protocol §5). Their seqs go in a sibling `seqs` map because a
+            # contributed row's seq is its OWN fold position, not this response's
+            # `asOfSeq`: seeding one at `asOfSeq` would make the store's
+            # higher-seq-wins rule drop the contributor's next live push.
+            try:
+                external = store.values(UNIT_KIND, slug)
+            except Exception:
+                logger.debug("contributed projections failed for %r", slug, exc_info=True)
+                continue
+            if not external:
+                continue
+            block = out[slug]
+            block.setdefault("values", {})
+            seqs: dict[str, int] = block.setdefault("seqs", {})
+            # A contributed row orders on (stateVersion, seq), which is what the
+            # store already enforces on publish -- a lower stateVersion is refused
+            # outright and an equal one requires the seq to advance. The client has
+            # to compare the same pair or it cannot tell a deletion from a stale
+            # frame, so the version rides beside the seq rather than being folded
+            # into it.
+            state_versions: dict[str, int] = block.setdefault("stateVersions", {})
+            schemas: dict[str, dict] = block.setdefault("schemas", {})
+            for key, ext in external.items():
+                if ext.seq < 0 and ext.value is None:
+                    # A schema published before the first fold: nothing to render.
+                    continue
+                # Serve a row only while its app may still publish THIS key.
+                # Asking whether the app declares contributions at all is too
+                # coarse: a manifest narrowed to fewer keys still declares them, so
+                # a key outside its current declaration would keep rendering. The
+                # teardown that deletes these rows on disable and uninstall is
+                # scheduled rather than awaited -- deliberately, because it has to
+                # run after the lifecycle lock is released to tell a real removal
+                # from a
+                # same-name reinstall -- so a gateway that stops before it runs
+                # would otherwise keep rendering a removed app's cards after a
+                # restart, with nothing later clearing them. Checking here closes
+                # that for any reason the teardown did not run, and reads the same
+                # declaration the write path gates on, so the two cannot disagree
+                # about what an app owns. The rows stay on disk: a reinstall that
+                # declares the same keys shows them again.
+                if not _contributor_may_publish(ext.app, key):
+                    continue
+                block["values"][key] = ext.value
+                seqs[key] = ext.seq
+                state_versions[key] = ext.state_version
+                if ext.schema is not None:
+                    schemas[key] = ext.schema
+            if not schemas:
+                block.pop("schemas", None)
+        # Narrow to the roster view, cap the contributed bytes, and run the
+        # network-boundary redaction HERE, in the worker thread, not on the
+        # serving loop (Opus 5.5 / members.py roster-redaction finding). A granted
+        # app can publish MAX_PROJECTION_KEYS_PER_APP_UNIT keys of
+        # MAX_PROJECTION_VALUE_BYTES each to every member; redacting one member's
+        # full set measured seconds, and a handful of such members on-loop crossed
+        # the 25 s loop-stall watchdog and crash-looped the gateway. The redaction
+        # chain (credential + exfiltration-URL scrub) is the same one the /history
+        # read and the WS push run; it must precede the browser egress. Recency is
+        # folded here too so the loop reads a ready value. The drawer still serves
+        # each member's full contributed values from its own route.
+        from kiro_crew.eventlog.service import _redact_projection_value
+
+        prepared: dict[str, dict] = {}
+        for slug, block in out.items():
+            narrowed = _cap_contributed_bytes(_roster_only(block))
+            prepared[slug] = {
+                "projections": _redact_projection_value(narrowed),
+                "recency": _recency_fold(block),
+            }
+        return prepared
 
     projections = await asyncio.to_thread(_project_rows)
-    # Same network-boundary redaction as the /history read and the projection
-    # WS push: a projection block carries agent-authored free-text (an activity
-    # record's `project`, message previews) and `svc.snapshot()` returns it raw,
-    # so the credential + exfiltration-URL chain has to run before it crosses to
-    # the browser or the roster list leaks what the sibling reads scrub. Narrowed to
-    # the roster view FIRST so the chain runs over what the row ships rather than
-    # over three views the row discards afterwards.
-    from kiro_crew.eventlog.service import _redact_projection_value
-
     for row in rows:
-        block = projections.get(row["slug"], {"asOfSeq": _SEQ_UNATTRIBUTABLE, "values": {}})
-        row["projections"] = _redact_projection_value(_roster_only(block))
-        row["last_active_ts"] = _recency_for_row(block, row.get("last_active_ts"))
+        prep = projections.get(row["slug"])
+        if prep is None:
+            row["projections"] = {"asOfSeq": _SEQ_UNATTRIBUTABLE, "values": {}}
+            continue
+        row["projections"] = prep["projections"]
+        row["last_active_ts"] = _recency_floor(prep["recency"], row.get("last_active_ts"))
 
     return web.json_response({"members": rows})
 
 
-def _recency_for_row(block: dict, transcript_ts: Any) -> float:
-    """The roster row's ``last_active_ts``: the crew log's fold, floored by the
-    transcript.
+def _recency_fold(block: dict) -> float:
+    """The crew log's folded recency for a member's *block* (epoch seconds).
 
     The **crew log is the authority**, and that is the whole point of reading it
     here. ``RosterProjection`` sets ``last_active_ts`` on every
     ``member/message`` — including a machinery row that carries no preview — so
     it answers "when was this member last active", which is the question the
-    Recent sort asks. The transcript's last SPEECH row answers a narrower one:
-    when did this member last SAY something. Ordering by that put a crewmate the
-    user had just messaged below one whose agent had spoken longer ago, and it
-    could not move at all for a member whose log exists but whose transcript
-    rows had not been flushed yet. The same fold is what the pushed
-    ``member_projection`` frame carries, so taking it here makes the cold row
-    and the live frame one value and lets a send reorder the list with no
-    roster refetch.
-
-    The transcript is kept as a **floor**, not as a rival: these events are
-    appended on a best-effort hook that a queue ceiling may drop, and a member
-    whose log has no ``last_active_ts`` at all (no log yet, a shared slug, a
-    read the store would not prove — every one of which answers an empty
-    ``values``) has only the transcript. Taking the greater of the two can
-    therefore lose neither, and because it is monotone a lagging fold can never
-    walk a row's recency backwards.
+    Recent sort asks. The same fold is what the pushed ``member_projection``
+    frame carries, so taking it here makes the cold row and the live frame one
+    value and lets a send reorder the list with no roster refetch. The caller
+    floors it with the transcript via :func:`_recency_floor`.
     """
     from kiro_crew.eventlog import types as eventlog_types
 
-    floor = _as_epoch(transcript_ts)
     values = block.get("values") if isinstance(block, dict) else None
     roster = values.get(eventlog_types.PROJ_ROSTER) if isinstance(values, dict) else None
-    folded = _as_epoch(roster.get("last_active_ts")) if isinstance(roster, dict) else 0.0
-    return max(floor, folded)
+    return _as_epoch(roster.get("last_active_ts")) if isinstance(roster, dict) else 0.0
+
+
+def _recency_floor(folded: float, transcript_ts: Any) -> float:
+    """The roster row's ``last_active_ts``: the crew log's *folded* recency,
+    floored by the transcript.
+
+    ``folded`` is :func:`_recency_fold` of the member's block (the log fold the
+    pushed ``member_projection`` frame also carries). The transcript's last
+    SPEECH row is a FLOOR, not a rival: the fold's events ride a best-effort hook
+    a queue ceiling may drop, and a member with no folded ``last_active_ts`` has
+    only the transcript. Taking the greater of the two loses neither, and because
+    it is monotone a lagging fold never walks a row's recency backwards.
+    """
+    return max(_as_epoch(transcript_ts), folded)
 
 
 def _as_epoch(value: Any) -> float:

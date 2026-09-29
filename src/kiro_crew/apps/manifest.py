@@ -394,9 +394,7 @@ class CronEntry:
             agent_sequence=[
                 str(a) for a in _list_or_empty("agent_sequence", data.get("agent_sequence"))
             ],
-            env={
-                str(k): str(v) for k, v in _dict_or_empty("env", data.get("env")).items()
-            },
+            env={str(k): str(v) for k, v in _dict_or_empty("env", data.get("env")).items()},
             timezone=_str_or_flagged("timezone", data.get("timezone")),
             skip_dates=[str(d) for d in _list_or_empty("skip_dates", data.get("skip_dates"))],
             folder=_str_or_empty(data.get("folder")),
@@ -999,9 +997,7 @@ class Dependencies:
             # it must degrade to "empty", never crash. Both lines, since the
             # pre-existing `commands` had the identical shape.
             commands=[str(c) for c in (data.get("commands") or [])],
-            optionalCommands=[  # noqa: N815
-                str(c) for c in (data.get("optionalCommands") or [])
-            ],
+            optionalCommands=[str(c) for c in (data.get("optionalCommands") or [])],  # noqa: N815
         )
 
 
@@ -1585,9 +1581,11 @@ class CommandArgument:
             placeholder=str(data.get("placeholder", "")),
             hint=str(data.get("hint", "")),
             kind=str(data.get("kind", "text")),
-            hosts=[str(h).strip().lower() for h in hosts_raw if str(h).strip()]
-            if isinstance(hosts_raw, list)
-            else [],
+            hosts=(
+                [str(h).strip().lower() for h in hosts_raw if str(h).strip()]
+                if isinstance(hosts_raw, list)
+                else []
+            ),
             patternError=str(data.get("patternError", "")),
             saw_pattern="pattern" in data,
             # A `hosts` that is present but not a list would otherwise coerce to the
@@ -1703,9 +1701,7 @@ class CommandContribution:
             # argument declared", which is a DIFFERENT command rather than an invalid
             # one. An explicit ``null`` is treated as absent, matching the host.
             bad_argument=(
-                "argument" in data
-                and arg_raw is not None
-                and not isinstance(arg_raw, dict)
+                "argument" in data and arg_raw is not None and not isinstance(arg_raw, dict)
             ),
         )
 
@@ -1724,14 +1720,12 @@ class CommandContribution:
             # Mirrors `MAX_KEYWORDS` in `contributedCommands.ts`, which drops the overflow
             # -- refused here so the author is told rather than silently trimmed.
             errors.append(
-                f"{where}: {len(self.keywords)} keywords exceeds the limit of "
-                f"{_MAX_KEYWORDS}"
+                f"{where}: {len(self.keywords)} keywords exceeds the limit of " f"{_MAX_KEYWORDS}"
             )
         for kw in self.keywords:
             if _mirrored_len(kw) > _MAX_KEYWORD:
                 errors.append(
-                    f"{where}: keyword exceeds {_MAX_KEYWORD} characters "
-                    f"({_mirrored_len(kw)})"
+                    f"{where}: keyword exceeds {_MAX_KEYWORD} characters " f"({_mirrored_len(kw)})"
                 )
                 break
         if not self.title:
@@ -1742,8 +1736,7 @@ class CommandContribution:
             # the frontend -- the command vanished from the launcher with the app author
             # having seen no error on install, the worst of both validators.
             errors.append(
-                f"{where}: title exceeds {_MAX_TITLE} characters "
-                f"({_mirrored_len(self.title)})"
+                f"{where}: title exceeds {_MAX_TITLE} characters " f"({_mirrored_len(self.title)})"
             )
         if self.subtitle and _mirrored_len(self.subtitle) > _MAX_TITLE:
             # Mirrors the frontend's cap. The subtitle is SEARCHED -- `rankRootRows` runs
@@ -1795,8 +1788,7 @@ class CommandContribution:
                 # The reader is asked for a value the command then ignores -- always a
                 # mistake, and a confusing one, because the command still runs.
                 errors.append(
-                    f"{where}: declares an argument but the prompt never uses "
-                    f"{ARGUMENT_TOKEN}"
+                    f"{where}: declares an argument but the prompt never uses " f"{ARGUMENT_TOKEN}"
                 )
             errors.extend(self._validate_matcher(where))
         return errors
@@ -2133,9 +2125,7 @@ class Contributes:
     #: Counted rather than flagged so the error can say how many vanished. Not
     #: serialized.
     dropped_commands: int = 0
-    sessionControls: list[SessionControlContribution] = field(  # noqa: N815
-        default_factory=list
-    )
+    sessionControls: list[SessionControlContribution] = field(default_factory=list)  # noqa: N815
     #: Whether the manifest's ``sessionControls`` was present but not a list. Same reason
     #: as ``bad_commands``: coercing to ``[]`` reads as a deliberate empty list, so the
     #: declaration would install clean and then never render a chip. Not serialized.
@@ -2189,9 +2179,11 @@ class Contributes:
                 # discarded here is reported as nothing at all — the app installs
                 # clean and the control simply never appears. The placeholder fails
                 # the required-field checks, which is that promised refusal.
-                SessionControlContribution.from_dict(c)
-                if isinstance(c, dict)
-                else SessionControlContribution()
+                (
+                    SessionControlContribution.from_dict(c)
+                    if isinstance(c, dict)
+                    else SessionControlContribution()
+                )
                 for c in raw_controls
             ]
             if isinstance(raw_controls, list)
@@ -2210,8 +2202,7 @@ class Contributes:
             bad_commands="commands" in data and not isinstance(raw, list),
             dropped_commands=sum(1 for c in entries if not isinstance(c, dict)),
             sessionControls=controls,
-            bad_session_controls="sessionControls" in data
-            and not isinstance(raw_controls, list),
+            bad_session_controls="sessionControls" in data and not isinstance(raw_controls, list),
             bad_panel_tabs="panelTabs" in data and not isinstance(tabs_raw, list),
             dropped_panel_tabs=sum(1 for t in tab_entries if not isinstance(t, dict)),
             bad_file_menu_items="fileMenuItems" in data and not isinstance(items_raw, list),
@@ -2327,6 +2318,179 @@ class Contributes:
         return errors
 
 
+#: Most an app may declare in one ``contributions`` list. A pattern is a grant,
+#: and a grant list long enough to be unreadable is one nobody reviews.
+_MAX_CONTRIBUTION_PATTERNS = 32
+
+#: Longest one contribution pattern (or unit kind) may be. The count limit does
+#: not cap the strings themselves, and the grant cache retains every pattern and
+#: matches each append against it, so length needs its own ceiling. Module-level
+#: so the install-time validator, the stored-approvals writer and the cold grant
+#: reader all bound against the same number.
+_MAX_CONTRIBUTION_PATTERN_CHARS = 200
+
+
+def _known_unit_kinds() -> frozenset[str]:
+    """Unit kinds this gateway has a log for, or empty when unavailable.
+
+    Function-local import: ``kiro_crew.eventlog`` pulls in the members layer,
+    and this module is imported by the installer and the CLI, which must parse a
+    manifest without that. An empty answer skips the kind check rather than
+    failing the install -- see ``Contributions.validate``.
+    """
+    try:
+        from kiro_crew.eventlog.contrib import unit_kinds
+
+        return frozenset(unit_kinds())
+    except Exception:  # pragma: no cover - defensive
+        return frozenset()
+
+
+@dataclass
+class Contributions:
+    """What an app may read, append and publish on a unit's append-only log.
+
+    The contribution protocol's §2 declaration. Distinct from
+    :class:`Contributes` next door, which is UI: a contributed command or panel
+    tab is a row the host renders, while a contribution here is authority over a
+    unit's log -- which event types this app may append, which projection keys it
+    may publish, and which unit kinds it may reach at all.
+
+    Every pattern MUST begin with the app's own name followed by ``/``, which is
+    what makes a grant unforgeable by inspection: reading ``["mochi/*"]`` in
+    ``mochi``'s manifest is the whole check. ``units`` is a plain list of kinds
+    (``member``), so an app that declares none can do nothing here.
+
+    Declaring this grants the ``/api/eventlog/`` paths and the ``eventlog_*``
+    frames; no separate ``permissions.api`` entry is needed. The HTTP handlers
+    re-derive ownership per request from this same declaration, so the path grant
+    confers no authority over another app's namespace.
+    """
+
+    events: list[str] = field(default_factory=list)
+    projections: list[str] = field(default_factory=list)
+    units: list[str] = field(default_factory=list)
+    #: Whether the manifest's ``contributions`` was present but not an object.
+    #: Same reason as ``Contributes.bad_block``: coercing to empty reads as "this
+    #: app contributes nothing", so the author sees neither an error nor any
+    #: working append. Not serialized.
+    bad_block: bool = False
+    #: Which of the three keys was present but not an array. Not serialized.
+    bad_lists: list[str] = field(default_factory=list)
+
+    def declared(self) -> bool:
+        """Whether this app declared anything at all under ``contributions``."""
+        return bool(self.events or self.projections or self.units)
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {}
+        if self.events:
+            d["events"] = self.events
+        if self.projections:
+            d["projections"] = self.projections
+        if self.units:
+            d["units"] = self.units
+        return d
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Contributions:
+        bad: list[str] = []
+        for key in ("events", "projections", "units"):
+            if key in data and not isinstance(data.get(key), list):
+                bad.append(key)
+        return cls(
+            events=_granted_list(data.get("events")),
+            projections=_granted_list(data.get("projections")),
+            units=_granted_list(data.get("units")),
+            bad_lists=bad,
+        )
+
+    def validate(self, app_name: str, known_kinds: frozenset[str]) -> list[str]:
+        """Errors for this declaration, checked against *app_name* and the kinds.
+
+        *known_kinds* is passed in rather than imported: the manifest layer must
+        parse without pulling in the event-log package, and an installer running
+        against a newer gateway should not fail on a kind this build knows about.
+        An empty set skips the kind check for that reason.
+        """
+        errors: list[str] = []
+        if self.bad_block:
+            errors.append(
+                "contributions must be an object -- a non-object value validates as "
+                "contributing nothing, so the app installs clean and then every "
+                "append it makes is refused with no explanation"
+            )
+        for key in self.bad_lists:
+            errors.append(
+                f"contributions.{key} must be an array -- a non-array value passes as "
+                "empty and then disappears from the serialized manifest, so the app "
+                "author sees neither an error nor a working grant"
+            )
+        prefix = f"{app_name}/"
+        for field_name, patterns in (("events", self.events), ("projections", self.projections)):
+            if len(patterns) > _MAX_CONTRIBUTION_PATTERNS:
+                errors.append(
+                    f"contributions.{field_name}: {len(patterns)} patterns exceeds the "
+                    f"limit of {_MAX_CONTRIBUTION_PATTERNS}"
+                )
+            for pattern in patterns:
+                # Bounded in LENGTH as well as in count. The grant cache retains
+                # these strings and matches every append against them, so a
+                # manifest with the maximum number of megabyte-long patterns costs
+                # memory and match time without limit even though the count check
+                # above is satisfied.
+                if isinstance(pattern, str) and len(pattern) > _MAX_CONTRIBUTION_PATTERN_CHARS:
+                    errors.append(
+                        f"contributions.{field_name}: a pattern is {len(pattern)} characters, "
+                        f"over the limit of {_MAX_CONTRIBUTION_PATTERN_CHARS}"
+                    )
+                if not app_name:
+                    # No name to check against; the manifest's own name error
+                    # already fails this install.
+                    continue
+                if not pattern.startswith(prefix):
+                    errors.append(
+                        f"contributions.{field_name}: {pattern!r} must begin with "
+                        f"{prefix!r} -- a contributor may only name its own namespace"
+                    )
+                elif len(pattern) == len(prefix):
+                    errors.append(
+                        f"contributions.{field_name}: {pattern!r} names the prefix and "
+                        f"nothing else; use {prefix + '*'!r} to mean every key"
+                    )
+        # `units` is bounded on both axes too, but with its own check rather than in
+        # the loop above: a unit kind is a bare name like `member`, so the
+        # own-namespace prefix rule that governs an event or projection pattern
+        # would reject every legitimate entry. Without a bound a manifest can
+        # declare the same kind arbitrarily many times and the grant cache retains
+        # all of them.
+        if len(self.units) > _MAX_CONTRIBUTION_PATTERNS:
+            errors.append(
+                f"contributions.units: {len(self.units)} entries exceeds the "
+                f"limit of {_MAX_CONTRIBUTION_PATTERNS}"
+            )
+        for kind_name in self.units:
+            if isinstance(kind_name, str) and len(kind_name) > _MAX_CONTRIBUTION_PATTERN_CHARS:
+                errors.append(
+                    f"contributions.units: an entry is {len(kind_name)} characters, "
+                    f"over the limit of {_MAX_CONTRIBUTION_PATTERN_CHARS}"
+                )
+        if known_kinds:
+            for kind in self.units:
+                if kind not in known_kinds:
+                    errors.append(
+                        f"contributions.units: unknown unit kind {kind!r} "
+                        f"(known: {', '.join(sorted(known_kinds))})"
+                    )
+        if (self.events or self.projections) and not self.units:
+            errors.append(
+                "contributions declares events or projections but no units -- with no "
+                "unit kind granted the declaration reaches nothing, which reads as a "
+                "broken app rather than as a manifest to fix"
+            )
+        return errors
+
+
 _KNOWN_FIELDS = frozenset(
     {
         "name",
@@ -2354,6 +2518,7 @@ _KNOWN_FIELDS = frozenset(
         "publishProvider",
         "notifications",
         "contributes",
+        "contributions",
     }
 )
 
@@ -2423,6 +2588,15 @@ class AppManifest:
     # ``extra`` is by definition the un-checked bucket. Being a known field is what
     # makes ``validate()`` see it on every parse.
     contributes: Contributes = field(default_factory=Contributes)
+
+    # --- Contributions to a unit's append-only log (contribution protocol §2) ---
+    #
+    # Authority, not UI: which event types this app may append, which projection
+    # keys it may publish, and which unit kinds it may reach. Typed for the same
+    # reason as ``contributes`` -- ``extra`` is the un-checked bucket, and a grant
+    # that decides what an out-of-process contributor may write to the operator's
+    # crew log has to be seen by ``validate()`` on every parse.
+    contributions: Contributions = field(default_factory=Contributions)
 
     # --- Discovery ---
     tags: list[str] = field(default_factory=list)
@@ -2547,9 +2721,7 @@ class AppManifest:
                 errors.append(
                     f"session control contribution entryPoint contains path traversal: {ctl.entryPoint!r}"
                 )
-            if ctl.statusPath and not _SESSION_CONTROL_STATUS_PATH_RE.fullmatch(
-                ctl.statusPath
-            ):
+            if ctl.statusPath and not _SESSION_CONTROL_STATUS_PATH_RE.fullmatch(ctl.statusPath):
                 # Refused rather than ignored: a status route the dashboard
                 # declines to call would leave the chip permanently stateless
                 # with nothing saying why.
@@ -2632,6 +2804,12 @@ class AppManifest:
                     f"or /apps/{self.name}/api/ "
                     "(no traversal, no other app's namespace, no core route)"
                 )
+
+        # Log contributions: the `<app>/` prefix rule and the unit kinds. The kind
+        # set is read from the event-log registry HERE, where a manifest is being
+        # validated against THIS gateway, rather than baked into the manifest layer
+        # -- which must stay parseable without the event-log package.
+        errors.extend(self.contributions.validate(self.name, _known_unit_kinds()))
 
         return errors
 
@@ -2804,6 +2982,14 @@ class AppManifest:
             # Included only when non-empty so manifests signed before platform was
             # covered keep producing the identical payload.
             body["platform"] = platform_d
+        if self.contributions.declared():
+            # A contribution grant is authority over the operator's own crew log:
+            # widening `events` or `projections` on a signed app would let it write
+            # event types and publish views the publisher never declared, with every
+            # visible character of the app and the signature unchanged. Included only
+            # when declared, so manifests signed before this field existed keep
+            # producing the identical payload.
+            body["contributions"] = self.contributions.to_dict()
         return json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
     # -----------------------------------------------------------------
@@ -2865,6 +3051,9 @@ class AppManifest:
         contrib_d = self.contributes.to_dict()
         if contrib_d:
             d["contributes"] = contrib_d
+        contributions_d = self.contributions.to_dict()
+        if contributions_d:
+            d["contributions"] = contributions_d
         if self.tags:
             d["tags"] = self.tags
         if self.jobFamilies:
@@ -2942,6 +3131,15 @@ class AppManifest:
             else Contributes(bad_block=True)
         )
 
+        contributions_raw = data.get("contributions", {})
+        contributions = (
+            Contributions.from_dict(contributions_raw)
+            if isinstance(contributions_raw, dict)
+            # Same fail-loud shape as `contributes` above: a non-object here would
+            # validate as "grants nothing" and then refuse every append the app makes.
+            else Contributions(bad_block=True)
+        )
+
         return cls(
             name=str(data.get("name", "")),
             version=str(data.get("version", "")),
@@ -2970,6 +3168,7 @@ class AppManifest:
             publishProvider=publish_provider,
             notifications=notifications,
             contributes=contributes,
+            contributions=contributions,
             tags=[str(t) for t in data.get("tags", []) if t],
             jobFamilies=[str(j) for j in data.get("jobFamilies", []) if j],  # noqa: N815
             extra=extra,
@@ -3078,9 +3277,7 @@ def has_stdio_mcp_server(manifest: AppManifest) -> bool:
     from the app's provisioned deps tree, which is why its presence is what
     makes ``bridges.py`` provision at registration.
     """
-    return any(
-        isinstance(cfg, dict) and not cfg.get("url") for cfg in manifest.mcpServers.values()
-    )
+    return any(isinstance(cfg, dict) and not cfg.get("url") for cfg in manifest.mcpServers.values())
 
 
 def file_entry_point_refusal(entry_point: str, app_root: Path) -> str:

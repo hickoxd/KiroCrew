@@ -2461,7 +2461,17 @@ async def install_from_registry(
             # launch. Leaving it False would report success to the caller while the
             # `finally` rolled the source checkout back underneath it.
             durable_success = True
-            reg_result = register_external_app(
+            # GPT 6.1 F5: offload off the event loop. ``register_external_app``
+            # reaches ``_revoke_grants_before_replacement`` -> ``grants.revoke`` ->
+            # ``Condition.wait_for`` (the bounded commit drain, up to
+            # ``_DRAIN_TIMEOUT_SECS``), plus file-locked manifest/metadata writes.
+            # The managed branch already runs its manager operations through an
+            # executor; this self-managed branch ran the same blocking primitive
+            # inline, so a registry update of an installed self-managed app while a
+            # contribution commit was outstanding froze every gateway task for the
+            # drain window (no-blocking-call-on-event-loop).
+            reg_result = await asyncio.to_thread(
+                register_external_app,
                 name=name,
                 version=version,
                 display_name=display,

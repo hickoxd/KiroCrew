@@ -30,11 +30,17 @@ from chat_test_helpers import _make_state
 
 from kiro_crew import members
 from kiro_crew.config.sections import KiroCrewAgentConfig
-from kiro_crew.dashboard.handlers.members import _as_epoch, _recency_for_row
+from kiro_crew.dashboard.handlers.members import _as_epoch, _recency_floor, _recency_fold
 from kiro_crew.eventlog import types
 from kiro_crew.eventlog.service import get_service, set_service
 
 CREW = "radar"
+
+
+def _recency_for_row(block, transcript_ts):
+    # Equivalence shim: the handler splits the fold (worker thread) from the
+    # transcript floor (loop); their composition is the old single function.
+    return _recency_floor(_recency_fold(block), transcript_ts)
 
 
 def _block(last_active_ts, *, as_of_seq: int = 7) -> dict:

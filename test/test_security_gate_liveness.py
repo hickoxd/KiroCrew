@@ -164,6 +164,13 @@ def _url_payload_command(n: int) -> str:
 #: holds the canonical spelling and is off the event loop, so the anchors resolve
 #: inline. No new entry point, no target, no matching rule and no threshold moved.
 #:
+#: Raised again for the ``app-unit-approvals.json`` protected-path
+#: entry in ``paths.py`` (the app contribution protocol). That file is the only
+#: thing between an app's declared unit contributions and read/append access to a
+#: crew member's whole log -- the runtime intersects the declaration with it -- so a
+#: session must not be able to write it; the twelve lines are the ``_CREW_SECRET_LEAVES``
+#: entry and its rationale, not control logic that belongs elsewhere.
+#:
 #: The number IS the package's measured total, carrying no spare room: a ratchet with
 #: headroom admits exactly the unreviewed growth it exists to catch, so the next line
 #: added here fails this gate and has to be re-pinned deliberately, with its reason
@@ -178,7 +185,11 @@ def _url_payload_command(n: int) -> str:
 #:
 #: Raised for the read-only bash gate's refusal of variable-assigning expansions
 #: (`$[...]`, an `=` after `${`): one pattern alternative plus its reason comment.
-_PACKAGE_LINE_BUDGET = 28_428
+#:
+#: Raised again for the app-contribution protocol: the new ``eventlog`` contrib and
+#: grants modules, the installation-generation and replacement-revocation fences,
+#: and the roster redaction/bound add lines the gate cannot avoid.
+_PACKAGE_LINE_BUDGET = 28_440
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
