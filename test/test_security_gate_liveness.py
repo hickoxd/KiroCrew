@@ -178,7 +178,12 @@ def _url_payload_command(n: int) -> str:
 #:
 #: Raised for the read-only bash gate's refusal of variable-assigning expansions
 #: (`$[...]`, an `=` after `${`): one pattern alternative plus its reason comment.
-_PACKAGE_LINE_BUDGET = 28_428
+#:
+#: Raised for the AWS env-filter rules. grep/sed read the selector as text and awk
+#: evaluates it as code, so they are two catalog rows the keystone both enforces
+#: (one row would need a top-level alternation, which leaves the linear fragment
+#: matcher); only the text selector lets ``aws-account-id=`` pass.
+_PACKAGE_LINE_BUDGET = 28_452
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
