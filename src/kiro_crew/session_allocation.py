@@ -1757,6 +1757,11 @@ class SessionAllocationService:
         session.queue.clear()
         return taken
 
+    def peek_queue(self, key: str) -> tuple[Any, ...]:
+        """The queued entries, left in place."""
+        session = self._sessions.get(self._owner._fold_key(key))
+        return tuple(session.queue) if session is not None else ()
+
     def restore_queue(self, key: str, entries: tuple[Any, ...]) -> None:
         """Put ``detach_queue``'s entries back at the head, ahead of newer arrivals."""
         session = self._sessions.get(self._owner._fold_key(key))

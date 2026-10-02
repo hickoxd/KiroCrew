@@ -627,6 +627,43 @@ class TestTheSharedStopPath:
         assert not any("bob asked" in body for _, body in surface.edits[before:])
         assert queue.has_receipt("unified:agent"), "and his bubble keeps its only handle"
 
+    def test_a_message_sent_while_the_goal_pause_saves_survives_the_stop(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Stop drops what was queued at the press, not what arrived during its awaits."""
+        from kiro_crew import goal_actions
+
+        class _Peekable(_Sessions):
+            def peek_queue(self, key: str) -> tuple[Any, ...]:
+                return tuple(self.entries)
+
+        sessions = _Peekable([("1", "alice asked", _queued(ALICE, "a"))])
+        queue, surface = ReceiptQueue(), _Surface()
+
+        async def pausing(key: str, *, state: Any = None) -> bool:
+            sessions.entries.append(("2", "alice again", _queued(ALICE, "later")))
+            await _bubble(queue, surface, [(ALICE, "alice again")], "unified:agent")
+            return True
+
+        async def go() -> None:
+            await _bubble(queue, surface, [(ALICE, "alice asked")], "unified:agent")
+            await stop_running_turn(
+                sessions,
+                "unified:agent",
+                queue=queue,
+                surface=surface,
+                owner=ALICE,
+                deliver=AsyncMock(),
+            )
+
+        monkeypatch.setattr(goal_actions, "pause_session_goal", pausing)
+        asyncio.run(go())
+        assert [kwargs["mark"] for _, _, kwargs in sessions.entries] == ["later"]
+        # Its receipt line is kept too, so the bubble still reads queued, not cancelled.
+        assert [line.text for line in queue.lines_queued_by("unified:agent", ALICE)] == [
+            "alice again"
+        ]
+
     def test_the_owner_argument_is_required(self) -> None:
         """No default, so a channel added later cannot inherit the whole-queue clear.
 

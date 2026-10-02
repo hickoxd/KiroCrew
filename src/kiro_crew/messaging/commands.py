@@ -50,6 +50,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew import goal_actions
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_CONTEXT_RECYCLE,
     ACP_BACKENDS_HARNESS_MANAGED_COMPACTION,
@@ -61,7 +62,7 @@ from kiro_crew.cron import (
     format_schedule,
     get_local_tz,
 )
-from kiro_crew.messaging.queue_drain import entries_queued_by
+from kiro_crew.messaging.queue_drain import entries_queued_at_press
 from kiro_crew.messaging.queue_receipt import ReceiptQueue, ReceiptSurface
 from kiro_crew.safety_override import describe_grant_lifetime, safety_override
 from kiro_crew.security import redact
@@ -126,6 +127,7 @@ async def stop_running_turn(
     surface: ReceiptSurface,
     owner: str,
     deliver: Callable[[str], Awaitable[Any]],
+    goal_state: Any = None,
 ) -> str:
     """Abort the in-flight turn, drop the caller's queued messages, finalize the receipt.
 
@@ -196,6 +198,10 @@ async def stop_running_turn(
             return STOP_REPLY_COMPACTING
         force = True
     note_user_stop(sessions, session_key)
+    pressed = entries_queued_at_press(sessions, session_key, owner)
+    pressed_lines = queue.lines_queued_by(session_key, owner)
+
+    await goal_actions.pause_session_goal(session_key, state=goal_state)
     cancelled_turn = False
     if force:
         if getattr(sessions, "stop_turn", None) is not None:
@@ -205,9 +211,7 @@ async def stop_running_turn(
                 # entries are carried across to the successor and only the
                 # caller's are dropped (``force_stop_keeping_others``), which is
                 # what the docstring above requires of a shared key.
-                cancelled_turn = await force_stop_keeping_others(
-                    sessions, session_key, entries_queued_by(owner)
-                )
+                cancelled_turn = await force_stop_keeping_others(sessions, session_key, pressed)
             except Exception:
                 logger.warning(
                     "%s: force stop failed for %s", surface.label, session_key, exc_info=True
@@ -233,9 +237,12 @@ async def stop_running_turn(
         # message the same person sent during the stop's awaits, which is newer
         # intent the Stop was never aimed at. The receipt is still finalized.
         if not force:
-            sessions.clear_queue(session_key, entries_queued_by(owner))
-        await queue.finish_cancelled_locked(session_key, surface, owner)
+            sessions.clear_queue(session_key, pressed)
+        await queue.finish_cancelled_locked(session_key, surface, owner, pressed_lines)
     reply = STOP_REPLY_CANCELLED if cancelled_turn else STOP_REPLY_IDLE
+    warning = goal_actions.goal_pause_warning(session_key, state=goal_state)
+    if warning:
+        reply = f"{reply}\n\n{warning}"
     await deliver(reply)
     return reply
 
