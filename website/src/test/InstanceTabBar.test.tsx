@@ -443,7 +443,7 @@ describe('InstanceTabBar', () => {
     expect(lead.textContent).toMatch(/Cloud One/)
   })
 
-  it('toggles stable order from the dropdown, persists it, and keeps the menu open', async () => {
+  it('no longer offers the stable-order toggle in the switcher menu', async () => {
     vi.mocked(api.listInstances).mockResolvedValue(listResp([conn()]))
     const store = createTestStore({
       instances: { warm: { 'cd-1': { port: 7778, token: 't' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {} },
@@ -452,13 +452,10 @@ describe('InstanceTabBar', () => {
     renderWithProviders(<InstanceTabBar />, { store })
 
     await u.click(await screen.findByRole('button', { name: /Switch crew/i }))
-    const toggle = await screen.findByTestId('crew-stable-order-toggle')
-    expect(toggle).toHaveAttribute('aria-checked', 'false')
-    await u.click(toggle)
-    // Persisted, and the menu stayed open so the checkmark flip is visible and a
-    // second adjustment needs no reopen.
-    await waitFor(() => expect(localStorage.getItem('mc-crew-switcher-stable-order')).toBe('1'))
-    expect(await screen.findByTestId('crew-stable-order-toggle')).toHaveAttribute('aria-checked', 'true')
+    // The "Keep tab order fixed" menu toggle was removed in the switcher
+    // redesign; the ordering engine stays (covered by the stable-order ordering
+    // tests), but the menu no longer surfaces the control.
+    expect(screen.queryByTestId('crew-stable-order-toggle')).toBeNull()
   })
 
   it('breaks and clamps an unbreakable list error so it cannot paint over the notice\'s own Ask-the-agent control', async () => {
@@ -541,5 +538,61 @@ describe('clippedChipIds', () => {
 
   it('handles an empty row', () => {
     expect(clippedChipIds([], 300).size).toBe(0)
+  })
+})
+
+describe('InstanceTabBar — navigation (rail) variant', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    localStorage.clear()
+    setCrewPins([])
+    setStableOrder(false)
+    vi.mocked(isEmbeddedPane).mockReturnValue(false)
+  })
+
+  it('renders the current-crew identity trigger even with NO remote crews (entry point to add the first)', async () => {
+    vi.mocked(api.listInstances).mockResolvedValue(listResp([]))
+    renderWithProviders(<InstanceTabBar variant="navigation" />)
+    // The strip/inline variants render nothing with no remote crews; the rail
+    // identity must still be present so the first remote can be added.
+    expect(await screen.findByTestId('navigation-crew-switcher')).toBeInTheDocument()
+  })
+
+  it('shows the identity mark on the trigger and names a crew', async () => {
+    vi.mocked(api.listInstances).mockResolvedValue(listResp([conn()]))
+    const store = createTestStore({
+      instances: { warm: {}, activeId: 'cd-1', mru: ['cd-1'], unread: {} },
+    })
+    renderWithProviders(<InstanceTabBar variant="navigation" />, { store })
+    const trigger = await screen.findByTestId('navigation-crew-switcher')
+    expect(within(trigger).getByTestId('crew-identity-mark')).toBeInTheDocument()
+    // The accessible name folds the active crew's name and the switch action.
+    expect(trigger).toHaveAccessibleName(/Switch crew/i)
+  })
+
+  it('hides the crew name (sr-only) when collapsed, keeping only the identity mark', async () => {
+    vi.mocked(api.listInstances).mockResolvedValue(listResp([conn()]))
+    const store = createTestStore({
+      instances: { warm: {}, activeId: 'cd-1', mru: ['cd-1'], unread: {} },
+    })
+    renderWithProviders(<InstanceTabBar variant="navigation" collapsed />, { store })
+    const trigger = await screen.findByTestId('navigation-crew-switcher')
+    // The identity mark is always present; whichever crew the trigger names,
+    // its text is rendered sr-only when the rail is collapsed.
+    expect(within(trigger).getByTestId('crew-identity-mark')).toBeInTheDocument()
+    const srName = trigger.querySelector('.sr-only')
+    expect(srName).not.toBeNull()
+  })
+
+  it('opens the destination menu from the identity trigger', async () => {
+    vi.mocked(api.listInstances).mockResolvedValue(listResp([conn()]))
+    const store = createTestStore({
+      instances: { warm: {}, activeId: 'cd-1', mru: ['cd-1'], unread: {} },
+    })
+    const u = userEvent.setup()
+    renderWithProviders(<InstanceTabBar variant="navigation" />, { store })
+    await u.click(await screen.findByTestId('navigation-crew-switcher'))
+    expect(await screen.findByRole('menuitemradio', { name: /Local/i })).toBeInTheDocument()
+    expect(screen.getByRole('menuitemradio', { name: /Cloud One/i })).toBeInTheDocument()
   })
 })

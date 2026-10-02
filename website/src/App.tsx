@@ -140,7 +140,7 @@ import { NAV_ITEMS } from './shell/nav/navItems'
 import { useNavTip } from './shell/nav/navTip'
 import { isChatRoute, useRouteActiveModel } from './shell/nav/routeActive'
 import { useDeveloperMode } from './shell/nav/developerMode'
-import { RailHeaderGlyph, RailBrandToggle, RailCommunityLinks } from './shell/nav/railChrome'
+import { RailHeaderGlyph, RailCommunityLinks } from './shell/nav/railChrome'
 import { AdaptiveMobileRail } from './shell/nav/adaptiveMobileRail'
 
 // Lazy on purpose: the update-found popup (its policy module, Trans runtime
@@ -960,12 +960,22 @@ export default function App() {
       }
       const prior = navAutoCollapsed.current
       navAutoCollapsed.current = null
-      if (prior !== null) setNavCollapsed(prior)
+      // Wide (desktop) mode must never widen the rail on its own, so a
+      // preview-expand teardown restores the collapsed icon rail rather than a
+      // prior expanded state (which surfaced as the rail widening when the user
+      // clicked around and a Web Preview tore down). Narrow mode may restore the
+      // prior state as before.
+      if (prior !== null) setNavCollapsed(isMobileRef.current ? prior : true)
     }
     window.addEventListener(PREVIEW_EXPAND_EVENT, onPreviewExpand)
     return () => window.removeEventListener(PREVIEW_EXPAND_EVENT, onPreviewExpand)
   }, [])
   const isMobile = useIsMobile()
+  // Mirror isMobile into a ref so the preview-expand effect (mounted with []
+  // deps, before isMobile is declared) can read the current viewport mode
+  // without re-subscribing.
+  const isMobileRef = useRef(isMobile)
+  isMobileRef.current = isMobile
   const [sidePanelDock] = useSidePanelDock()
   // Side panel docked to the bottom (desktop only) swaps the shell from a
   // 3-column grid with a full-height right rail to a 2-column grid with an
@@ -979,7 +989,7 @@ export default function App() {
   const {
     focusMode, toggleFocusMode, focusActive, topPeek, railPeek, topPeekTrigger, topPeekSurface,
     railPeekTrigger, railPeekSurface, topChromeShown, localHeaderDragGaps,
-  } = useFocusChrome({ isMobile, navCollapsed, activeInstanceId, topReservePx })
+  } = useFocusChrome({ isMobile, navCollapsed: isMobile ? navCollapsed : true, activeInstanceId, topReservePx })
   // Whether the shell's one-shot entrance animation has already played.
   //
   // The local pane is HIDDEN, not unmounted, while a remote instance tab is
@@ -1267,7 +1277,7 @@ export default function App() {
   const { appBadges, discoverBadges, railAppBadges, railAppRunStates } = useRailBadges(approvalCount)
 
   const { shortcutsOpen, setShortcutsOpen, toggleShortcutsModal, commandPalette, agentSwitchNotice } = useShellKeyboard({
-    toggleFocusMode, toggleNav: () => toggleNav(), terminalEnabled, isPopout, isEmbed, terminalPoppedOut, activeSlotProject,
+    toggleFocusMode, toggleNav: () => toggleNav(), terminalEnabled, isPopout, isEmbed, terminalPoppedOut, activeSlotProject, isMobile,
   })
 
   const { kiroUsageOpen, setKiroUsageOpen, kiroUsageState, kiroCreditSurface, kiroAccountEntry } = useKiroUsageReadout()
@@ -1352,12 +1362,9 @@ export default function App() {
 
   const toggleNav = () => {
     if (isMobile) { if (mobileNavPhaseRef.current === 'open') closeMobileNavDrawer(); else openMobileNav() }
-    else {
-      // The user has taken ownership of the rail: leaving preview expand mode
-      // must not overwrite this with the pre-expand state.
-      navAutoCollapsed.current = null
-      setNavCollapsed(prev => { const next = !prev; safeSetItem('mc-nav', next ? '1' : '0'); return next })
-    }
+    // Desktop: no-op. The rail is fixed-collapsed on desktop (the expandable
+    // rail is a mobile-only affordance), so the sidebar keyboard shortcut and
+    // any other toggleNav caller cannot widen it.
   }
   // Close mobile nav on route change
   useEffect(() => { if (isMobile) closeMobileNavDrawer() }, [location.pathname]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -1375,7 +1382,11 @@ export default function App() {
   useEffect(() => { if (!isMobile) { setMobileNavPhase('closed'); takeOverDrawer(mobileNavX) } }, [isMobile, mobileNavX])
   // Focus mode honours the collapse preference too: the overlay rail is as wide
   // as the docked rail would be, and the collapse control toggles it the same way.
-  const effectiveCollapsed = navCollapsed && !isMobile
+  // The expandable rail is a MOBILE affordance only. On desktop the rail is
+  // always the collapsed icon rail (hover hints as its labels); it never widens,
+  // so a nav selection cannot also widen it. Mobile keeps its drawer rail, which
+  // navCollapsed/the drawer phase drive separately.
+  const effectiveCollapsed = !isMobile ? true : navCollapsed && !isMobile
   // Publish the rail track so consumers outside the shell can size against the
   // space actually left for content — ChatPage's activity panel decides
   // beside-vs-fill from it. Kept in sync with the gridTemplateColumns value
@@ -1418,6 +1429,12 @@ export default function App() {
       active={navRowActive(n.path)}
       collapsed={effectiveCollapsed}
       onClick={closeMobileNav}
+      // When the chat/Sessions row is ALREADY the active surface, a second click
+      // has nowhere to navigate — so it toggles the sessions side panel instead
+      // of being a dead click (ChatPage listens for `toggle-pin-chat-sidebar`;
+      // the Alt+ chord drives the same event). Non-chat rows keep plain
+      // navigation. This is a drawer toggle, NOT a rail-width expand, so the
+      // fixed-collapsed rail shape is unchanged.
       onClickOverride={isChat && (activePath === n.path || activePath.startsWith(n.path + '/')) ? () => window.dispatchEvent(new Event('toggle-pin-chat-sidebar')) : undefined}
       badge={<NavBadge navId={n.id} collapsed={effectiveCollapsed} appBadges={isAppNavId(n.id) ? railAppBadges : appBadges} runState={n.appName ? railAppRunStates[n.appName] : undefined} />}
     />
@@ -1662,7 +1679,7 @@ export default function App() {
     <div
       ref={shellRef}
       data-testid="dashboard-shell"
-      className={`relative z-[1] h-full grid ${shellEntered ? '' : 'animate-rise'} overflow-hidden bg-bg p-safe ${isMacElectron ? `mac-electron ${macFullscreen ? 'mac-fullscreen' : ''}` : ''} ${isWinElectron ? 'win-electron' : ''} ${isLinuxFramelessElectron ? 'linux-electron' : ''} ${isMobile ? 'grid-cols-[minmax(0,1fr)] grid-rows-[42px_minmax(0,1fr)]' : bottomDock ? 'grid-rows-[42px_minmax(0,1fr)_auto]' : 'grid-rows-[42px_minmax(0,1fr)]'}`}
+      className={`relative z-[1] h-full grid ${isMobile ? 'mobile-chrome' : !focusActive ? 'grabber-shell' : ''} ${shellEntered ? '' : 'animate-rise'} overflow-hidden bg-bg p-safe ${isMacElectron ? `mac-electron ${macFullscreen ? 'mac-fullscreen' : ''}` : ''} ${isWinElectron ? 'win-electron' : ''} ${isLinuxFramelessElectron ? 'linux-electron' : ''} ${isMobile ? 'grid-cols-[minmax(0,1fr)] grid-rows-[42px_minmax(0,1fr)]' : bottomDock ? 'grid-rows-[42px_minmax(0,1fr)_auto]' : 'grid-rows-[42px_minmax(0,1fr)]'}`}
       // Retire the entrance animation once it has played, so re-showing this
       // pane cannot replay it. Guarded on BOTH the keyframe name and the event
       // target: `animationend` bubbles, and descendants (banners, cards) use
@@ -2308,10 +2325,13 @@ export default function App() {
         {/* Top-fixed: menu row + primary destinations + Apps section header.
             The sidebar toggle lives HERE (menu row), not in the topbar. */}
         <div className="shrink-0 flex flex-col gap-0.5 px-2 pt-2">
-          <RailBrandToggle effectiveCollapsed={effectiveCollapsed} toggleNav={toggleNav} avatar={avatar} branding={branding} botName={botName} />
-          {/* Hairline under the expanded header (collapsed rail has none —
-              the big logo alone separates well). */}
-          {!effectiveCollapsed && <div aria-hidden="true" className="h-px bg-border shrink-0 mb-[7px]" />}
+          {/* The crew identity switcher IS the rail header — one identity that
+              names the crew and switches crews. The wide rail is permanently the
+              collapsed icon rail (hover hints are the only label), so there is no
+              expand/collapse toggle; the first nav item below is Sessions. */}
+          <div className="flex flex-col items-center mb-1.5">
+            <InstanceTabBar variant="navigation" collapsed={effectiveCollapsed} />
+          </div>
           {advertisedNavItems.filter(n => n.group === 'Main').map(n => <div key={n.id}>{renderNavRow(n)}</div>)}
           {/* Apps section: the old single "Explore" header link split into two
               nav rows — Discover (the storefront, /apps) and Library
@@ -2460,7 +2480,7 @@ export default function App() {
           const cap = NAV_ITEMS.find(n => n.id === 'capabilities')!
           const devPath = '/developer'
           return (
-            <div className="shrink-0 grid gap-0.5 px-2 pt-1 pb-2">
+            <div className="shrink-0 flex flex-col gap-0.5 px-2 pt-1 pb-2">
               {devMode && (() => {
                 const dotClass = effectiveCollapsed
                   ? 'absolute top-1 right-1 w-2 h-2 bg-accent rounded-full z-10 animate-pulse'
@@ -2597,7 +2617,8 @@ export default function App() {
         ) : (
           <nav
             ref={railPeekSurface}
-            className="focus-chrome-rail bg-bg-elevated border border-border rounded-xl flex flex-col mx-2 mt-0 mb-2 shadow-sm z-50 overflow-hidden"
+            data-compact={effectiveCollapsed ? 'true' : 'false'}
+            className="focus-chrome-rail dashboard-navigation flex flex-col mx-2 mt-0 mb-2 z-50 overflow-hidden"
             // Focus mode: same overlay treatment as the header. The rail's own
             // `mx-2` means translateX(-100%) would leave its 8px left margin
             // showing as a sliver, hence the extra 12px of travel. Width has to
@@ -2629,7 +2650,7 @@ export default function App() {
 
       {/* Content */}
       <div
-        className="flex flex-col min-h-0 min-w-0"
+        className="dashboard-surface flex flex-col min-h-0 min-w-0"
         // Focus mode reclaims the 236px rail column, which leaves everything in
         // this column — the chat sessions drawer first — flush against the
         // window's left edge, while the same surfaces stay inset 8px at the
