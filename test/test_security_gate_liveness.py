@@ -164,6 +164,14 @@ def _url_payload_command(n: int) -> str:
 #: holds the canonical spelling and is off the event loop, so the anchors resolve
 #: inline. No new entry point, no target, no matching rule and no threshold moved.
 #:
+#: Re-pinned from 28,428 for ``_deny_pattern_passes``: ``is_denied``'s
+#: whole-string and per-segment passes moved, unchanged, into one helper so that
+#: ``is_denied_synthesized_target(..., segments=True)`` can run them over the
+#: operator's own rules for a shell title kiro-cli cut short -- a rule anchored to
+#: one chained command of that title would otherwise stop firing. No new rule, no new
+#: matching logic and no floor change: the growth is the helper's signature, the flag
+#: and its docstring.
+#:
 #: The number IS the package's measured total, carrying no spare room: a ratchet with
 #: headroom admits exactly the unreviewed growth it exists to catch, so the next line
 #: added here fails this gate and has to be re-pinned deliberately, with its reason
@@ -178,7 +186,7 @@ def _url_payload_command(n: int) -> str:
 #:
 #: Raised for the read-only bash gate's refusal of variable-assigning expansions
 #: (`$[...]`, an `=` after `${`): one pattern alternative plus its reason comment.
-_PACKAGE_LINE_BUDGET = 28_428
+_PACKAGE_LINE_BUDGET = 28_462
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

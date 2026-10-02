@@ -157,6 +157,7 @@ from kiro_crew.hook_runtime.tool_identity import (  # noqa: F401
     set_builtin_app_agents,
     set_builtin_app_mcp_servers,
     set_builtin_app_names,
+    untruncated_shell_title,
 )
 from kiro_crew.hook_runtime.windows_paths import (  # noqa: F401
     _fold_extended_length_local,
@@ -1040,13 +1041,23 @@ class HookManager:
         # Strip display prefixes (e.g. "Running: ls *" → "ls *") so config
         # patterns like "ls" or "rm *" match without the prefix.
         normalized = _normalize_tool_name(tool_name)
+        # What the deny tiers judge in the title's place. A title in kiro-cli's
+        # cut shape (a leading slice of the command plus ``...``) is
+        # judged uncut (``untruncated_shell_title``): the cut is display
+        # truncation, and a structural rule read its end as the command's end.
+        # Every other title, and every title of a call with no command, is judged
+        # verbatim. A rebuilt title's sent form still meets the operator's own
+        # deny rules (after the deny loop below). The grant tiers further down
+        # keep reading ``tool_name`` / ``normalized``.
+        judged_title = untruncated_shell_title(tool_name, command)
+        judged_normalized = _normalize_tool_name(judged_title)
 
         # Security checks run against the raw command (when available) AND the
         # display title. The command is the ground truth for shell tools; the
         # title is retained so non-shell tools (whose identifier IS the title)
         # stay gated and so a dangerous title can't slip through behind a
         # benign command.
-        security_targets = [normalized]
+        security_targets = [judged_normalized]
         if command and command not in security_targets:
             security_targets.append(command)
 
@@ -1241,7 +1252,7 @@ class HookManager:
         authority = ctx.security
         denied_regexes = self._effective_denied(ctx)
         denied_notes = self._denied_notes()
-        deny_targets = [normalized, tool_name]
+        deny_targets = [judged_normalized, judged_title]
         # The canonical ``mcp__<server>__<tool>`` identity, when kiro-cli supplied
         # BOTH trusted ``_meta.kiro`` fields. ``select_tool_title`` prefers the
         # model's prose ``description``, so ``tool_name`` for an MCP call may be
@@ -1298,7 +1309,7 @@ class HookManager:
         # form of it, and feeding it there would widen matching by accident
         # instead of by grammar.
         governance_mcp_ref = mcp_identity_ref(mcp_server_name, mcp_tool_name)
-        if command:
+        if command and command not in deny_targets:
             deny_targets.append(command)
         for target in deny_targets:
             reason = authority.is_denied(
@@ -1309,6 +1320,41 @@ class HookManager:
             )
             if reason:
                 return ToolHookResult.deny(reason)
+        # The title kiro-cli actually SENT, when ``judged_title`` rebuilt it. The
+        # rebuild is for the shipped rules, whose shell-syntax reading (the
+        # git-publish floor, an end-anchored built-in) takes the cut end for the
+        # command's end. An operator's own rule is another matter: it may be
+        # written against the very string kiro-cli displayed, ``...`` included,
+        # and judging only the rebuilt title would retire it without a word. So
+        # the sent title is ALSO judged by every rule the operator authored --
+        # their enabled regexes, their ``auto_deny_tools`` globs and the
+        # companion overlay -- and by no shipped rule or floor. It goes through
+        # ``security.is_denied_synthesized_target(..., segments=True)``: those
+        # patterns only, through ``is_denied``'s whole-string AND per-segment
+        # passes, and no shipped rule or shell-syntax floor. A cut title is a
+        # command line, so a rule anchored to one chained command of it still
+        # meets that command; the floors are what misread the cut end. The
+        # overlay rides in the glob tier (``authority.effective_patterns()``)
+        # rather than through ``authority.is_denied_synthesized_target``, which
+        # judges the overlay with ``is_denied`` and so would run the git-publish
+        # floor on the cut text whenever a companion adds a pattern. Its patterns
+        # still meet the whole command, floors included, through ``deny_targets``
+        # above. Additive: a deny here can only deny.
+        if judged_title != tool_name:
+            operator_regexes = self.operator_denied_regexes()
+            sent_title_globs = list(authority.effective_patterns()) + list(
+                self._config.auto_deny_tools
+            )
+            for shown in dict.fromkeys((normalized, tool_name)):
+                reason = security.is_denied_synthesized_target(
+                    shown,
+                    operator_regexes,
+                    extra_patterns=sent_title_globs,
+                    reason_notes=denied_notes,
+                    segments=True,
+                )
+                if reason:
+                    return ToolHookResult.deny(reason)
         # The user's own ``auto_deny_tools`` GLOBS, and only those, are also
         # matched against the identity in the ``@server/tool`` spelling the
         # approve loop below uses (plus ``Running: @server/tool`` and the bare
@@ -1353,7 +1399,7 @@ class HookManager:
         if search_target:
             reason = authority.is_denied_synthesized_target(
                 search_target,
-                [p.pattern for p in self._config.denied_commands_user_added if p.enabled],
+                self.operator_denied_regexes(),
                 extra_patterns=self._config.auto_deny_tools,
                 reason_notes=denied_notes,
             )
@@ -1688,6 +1734,20 @@ class HookManager:
             self._config, current_context(), include_governance_pins=include_governance_pins
         )
 
+    def operator_denied_regexes(self) -> list[str]:
+        """The operator's own enabled ``user_added`` regexes, and nothing else.
+
+        The part of :meth:`effective_denied_regexes` the operator authored: no
+        shipped built-in and no governance pin. Always a list, never ``None``,
+        because ``security.is_denied`` reads ``None`` as "every built-in". These
+        are the regex-tier patterns the file-search synthesized target meets, and
+        they judge the title kiro-cli sent when ``untruncated_shell_title`` rebuilt
+        it -- here in ``on_tool_call`` and in ``llm_helpers._resolve_permission``
+        -- where a shipped rule only misreads the cut but an operator's rule may
+        have been written against exactly that text.
+        """
+        return [p.pattern for p in self._config.denied_commands_user_added if p.enabled]
+
 
 # ACP semantic tool kinds treated as read-only for the non-shell auto-approve
 # branch. Deliberately minimal — excludes "search"/"edit"/"execute"/"delete"/
@@ -1795,6 +1855,10 @@ def _cu_read_only_auto_approve(tool_name: str) -> bool:
 
 # Display prefixes that kiro-cli ACP adds to tool titles
 _TOOL_TITLE_PREFIXES = ("Running: ", "Reading ")
+
+# The marker kiro-cli appends when it cuts a long shell call's title (today
+# after the command's first 197 characters; see ``untruncated_shell_title``).
+_TITLE_TRUNCATION_MARKER = "..."
 
 # ACP semantic tool kind for a file write/edit (fs_write / code). The kind that
 # carries a real target path in ``raw_params['path']`` and maps to the
