@@ -178,7 +178,15 @@ def _url_payload_command(n: int) -> str:
 #:
 #: Raised for the read-only bash gate's refusal of variable-assigning expansions
 #: (`$[...]`, an `=` after `${`): one pattern alternative plus its reason comment.
-_PACKAGE_LINE_BUDGET = 28_428
+#:
+#: Raised for pass 3's macOS per-user directory exemption in ``redaction``:
+#: withholding this host's own ``confstr`` id from the bare-secret scan, so a macOS
+#: temp path (a computer-use screenshot among them) is not read as a key, costs the
+#: id lookup, its grammar, the per-id pattern, the reason only the host's own id is
+#: safe to withhold, and window classification with whole-run context that exempts
+#: only windows sharing ≥ 24 bytes with that id while every other positive window
+#: redacts each piece it touches. One mechanism, no new pass.
+_PACKAGE_LINE_BUDGET = 28_541
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
