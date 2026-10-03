@@ -1,17 +1,7 @@
 /**
- * Test: live sessions from connected remote instances MERGE into the Sessions
- * list by recency, rather than being appended after every local row.
- *
- * WHY THIS EXISTS AS A SIDEBAR TEST and not only a hook test: the hook returning
- * correct rows is not the property that broke. `history` arrives date-desc from
- * the backend, so the sidebar SKIPS its sort for the `date-desc` key as an
- * optimisation. Concatenating the hook's rows onto that pre-sorted array is a
- * type-correct change that silently violates the premise of that fast path — the
- * result is two sorted runs, not one — so every remote row rendered BELOW every
- * local row. That is the exact "local list with a remote list stuck on the end"
- * shape this feature exists to replace, and at the bottom of a long list it reads
- * as the feature not working at all. Only a test that asserts RENDERED ORDER
- * across the merge catches it; the hook's own spec passes either way.
+ * Test: live sessions from connected remote instances join the LIVE Sessions
+ * list, filed under their crew's group (per-machine groups, preview flag on),
+ * and keep none of the local-only affordances.
  *
  * Mock scaffolding mirrors ChatSidebar.federatedSearch.test.tsx (which mirrors
  * ChatSidebar.offline.test.tsx, the owner of the mock setup).
@@ -240,7 +230,7 @@ function renderSidebar({
   return { ...view, store, setActiveSlot: (active: string) => view.rerender(tree(active)) }
 }
 
-describe('ChatSidebar – remote crew sessions merge into the list', () => {
+describe('ChatSidebar – remote crew sessions in the live list', () => {
   // `mockReset` + re-declared default, not `mockClear`: the failure cases here
   // queue rejections, and an unconsumed `mockRejectedValueOnce` (or a persistent
   // `mockRejectedValue`) survives `mockClear` and poisons the NEXT case — which
@@ -253,7 +243,7 @@ describe('ChatSidebar – remote crew sessions merge into the list', () => {
     localStorage.clear()
   })
 
-  it('orders a remote row BETWEEN local LIVE sessions by recency', async () => {
+  it('files a remote row under its crew group, after every local LIVE session', async () => {
     localStorage.setItem(PREVIEW_INSTANCE_SESSIONS, '1')
     const { container } = renderSidebar()
 
@@ -268,10 +258,11 @@ describe('ChatSidebar – remote crew sessions merge into the list', () => {
 
     expect(newer).toBeGreaterThanOrEqual(0)
     expect(older).toBeGreaterThanOrEqual(0)
-    // Interleaved by recency among the LIVE sessions — these are the peer's OPEN
-    // slots, so they belong with local open sessions, not in the closed-tab drawer.
-    expect(newer).toBeLessThan(remote)
-    expect(remote).toBeLessThan(older)
+    // Origin is a container: the peer's OPEN slots sit in the crew's own group
+    // below Local, still in the live list rather than the closed-tab drawer.
+    expect(newer).toBeLessThan(older)
+    expect(older).toBeLessThan(remote)
+    expect(screen.getByTestId('crew-group-inst-a')).toHaveTextContent('REMOTE middle row')
   })
 
   it('prints each date-segment header once, even when a remote row was created in another bucket', async () => {
@@ -433,10 +424,9 @@ describe('ChatSidebar – remote crew sessions merge into the list', () => {
     const remoteRow = Array.from(container.querySelectorAll('[data-slot-key="remote-running"]'))
       .find(row => row.textContent?.includes('REMOTE active turn'))
     expect(remoteRow?.querySelector('.animate-spin')).not.toBeNull()
-    // Live state correctly outranks the click-outcome line, so the chip itself
-    // must stop being a bare guess-level name. "On astro" keeps the ownership
-    // visible without hiding "Running" or adding a second status line.
-    expect(remoteRow?.textContent).toContain('On astro')
+    // Inside its crew group the header names the machine, so no row chip.
+    expect(remoteRow?.closest('[data-testid="crew-group-inst-a"]')).not.toBeNull()
+    expect(remoteRow?.textContent).not.toContain('On astro')
   })
 
   it('says an unlinked peer row is not open here yet, and yields to live peer state', async () => {
@@ -688,7 +678,7 @@ describe('ChatSidebar – remote crew sessions merge into the list', () => {
     expect(container.textContent).not.toMatch(/checking remote crews/i)
   })
 
-  it('reveals the LOCAL session when a colliding remote row sorts above it', async () => {
+  it('reveals the LOCAL session when a remote row shares its key', async () => {
     // The reveal targets a row through the DOM. `data-slot-key` carries the RAW
     // key, which stops being a unique namespace once peer rows are merged: a
     // remote row with a byte-identical deterministic key carries the same
@@ -713,10 +703,9 @@ describe('ChatSidebar – remote crew sessions merge into the list', () => {
     try {
       const { container, store } = renderSidebar()
       await waitFor(() => expect(container.textContent).toContain('REMOTE same-key newer row'))
-      // Precondition: the colliding remote row really is first in the DOM, so a
-      // raw-key lookup would find it rather than the local row.
-      const text = container.textContent ?? ''
-      expect(text.indexOf('REMOTE same-key newer row')).toBeLessThan(text.indexOf('LIVE newer slot'))
+      // Precondition: both rows share the key `s-new` and both are rendered, so a
+      // raw-key lookup has two candidates. The remote one sits in its crew group.
+      expect(screen.getByTestId('crew-group-inst-a')).toHaveTextContent('REMOTE same-key newer row')
 
       store.dispatch(requestSlotReveal('s-new'))
 
@@ -807,9 +796,9 @@ describe('ChatSidebar – remote crew sessions merge into the list', () => {
     expect(executedLocally!.querySelector('[aria-label="More options"]')).not.toBeNull()
     expect(executedLocally!.querySelector('[data-draggable="true"]')).not.toBeNull()
     expect(executedLocally!.querySelector('[data-session-row]')).toHaveAttribute('aria-current', 'true')
-    // …and exactly ONE server chip: the runs-elsewhere marker it genuinely earns.
-    // Two chips was the visible symptom of the collision.
-    expect(executedLocally!.querySelectorAll('[data-testid="remote-crew-chip"]')).toHaveLength(1)
+    // Inside its crew group the header names the machine, so no row chip.
+    expect(executedLocally!.closest('[data-testid="crew-group-inst-a"]')).not.toBeNull()
+    expect(executedLocally!.querySelectorAll('[data-testid="remote-crew-chip"]')).toHaveLength(0)
 
     // …while the peer-OWNED row keeps none of them.
     expect(ownedByPeer!.querySelector('[aria-label="More options"]')).toBeNull()

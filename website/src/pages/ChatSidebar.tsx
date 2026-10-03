@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, memo, useMemo, useCallback, useId, Fragment } from 'react'
+import { useState, useRef, useEffect, memo, useMemo, useCallback, useId, useContext, Fragment } from 'react'
 import { createPortal } from 'react-dom'
 import { LayoutGroup, AnimatePresence, motion } from 'framer-motion'
 import { Plus, X, Pin, Monitor, ArrowUpDown, Eye, EyeOff, VenetianMask, Ghost, FolderPlus, FolderX, MessageSquare, MessageSquarePlus, Folder, ChevronRight, ChevronDown, ChevronUp, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns3, CornerDownRight, GripVertical, Check, GitFork, List, ListTree, Loader, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot, Users, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck, Server, Pause, Play, Hourglass } from 'lucide-react'
@@ -105,6 +105,8 @@ import { useDebouncedSessionSearch, useSearchMatches } from './chat-sidebar/sear
 import { openCrewWindow, useCrewWindow } from './chat/crew-window/crewWindowStore'
 import { isPeerRow, sessionRowIdentity, historyRowIdentity, localSlotFolder, isLocallyPinned, compareLocalPinnedThenSort } from './chat-sidebar/rowIdentity'
 import { useSessionSources } from './chat-sidebar/sessionSources'
+import { CrewGroupSection, CrewOfflineContext, LocalGroupHeader, useCollapsedCrews } from './chat-sidebar/CrewGroups'
+import { crewOf, type CrewGroup } from '../hooks/useInstanceSessions'
 import { useSessionRename, useFolderRename } from './chat-sidebar/rename'
 import { useSidebarLane, useFlatLane, useLaneCycle } from './chat-sidebar/lanes'
 import { useHistoryPane } from './chat-sidebar/history'
@@ -243,6 +245,9 @@ function PinnedSessionDivider() {
 function DisclosureChevron({ open, size, className = '' }: { open: boolean; size: number; className?: string }) {
   return <ChevronRight size={size} className={`shrink-0 transition-transform duration-200 ${open ? 'rotate-90' : ''} ${className}`.trimEnd()} />
 }
+
+/** Stable empty group list for the board, which groups nothing. */
+const NO_CREW_GROUPS: CrewGroup[] = []
 
 /** Lifecycle states after which a pull request can never merge, so its CI
  * rollup carries no actionable information and the lifecycle glyph is the only
@@ -926,6 +931,10 @@ const SessionRow = memo(function SessionRow({
   // in what a click does (open a window vs. navigate), which the handlers below decide.
   const foreignRow = !!peerId || onOpenElsewhere != null
   const peerName = s.peer_name || s.peer_id
+  // Inside a crew group the header already names the machine, so the row
+  // drops its own crew chip.
+  const inCrewGroup = scope.startsWith('crew:')
+  const inOfflineCrewGroup = useContext(CrewOfflineContext) && inCrewGroup
   const rowIdentity = sessionRowIdentity(s)
   // Remote and local gateways do not share a slot-key namespace. Deterministic
   // member/channel keys can be byte-identical, so a remote row must never use
@@ -1524,7 +1533,12 @@ const SessionRow = memo(function SessionRow({
         when: !!peerId,
         build: () => (
           <div className={ROW_STATUS_LINE_MUTED_CLS} data-testid="session-peer-not-open-here">
-            <span className="truncate min-w-0">{i18nT('pages.chatSidebar.not_open_here_yet', { name: peerName || '' })}</span>
+            {/* Inside a crew group the header already names the machine. */}
+            <span className="truncate min-w-0">{inOfflineCrewGroup
+              ? i18nT('pages.chatSidebar.crew_row_offline')
+              : inCrewGroup
+              ? i18nT('pages.chatSidebar.crew_row_open_here')
+              : i18nT('pages.chatSidebar.not_open_here_yet', { name: peerName || '' })}</span>
           </div>
         ),
       },
@@ -1944,7 +1958,7 @@ const SessionRow = memo(function SessionRow({
                 *  feature sees a pill with a word in it and cannot tell what a row
                 *  WITHOUT one means either, so the text names both halves: whose
                 *  session it is, and that clicking opens it here. */}
-              {peerId && (
+              {peerId && !inCrewGroup && (
                 <RemoteCrewChip
                   name={peerName || ''}
                   label={i18nT('pages.chatSidebar.on_instance', { name: peerName || '' })}
@@ -2065,7 +2079,7 @@ const SessionRow = memo(function SessionRow({
                *  is first on a federated search row: it qualifies the whole row,
                *  so a user scanning the list should meet it before the per-session
                *  flags that only make sense once you know where the session is. */}
-              {s.executor === 'remote' && (
+              {s.executor === 'remote' && !inCrewGroup && (
                 <RemoteCrewChip
                   name={remoteCrewName}
                   label={i18nT('pages.chatSidebar.on_instance', { name: remoteCrewName })}
@@ -2415,7 +2429,7 @@ function ChatSidebar({
   )
   const {
     historySearchResults, instancesList, instanceSessions, remoteSessionsError, allRows, allLiveSlots,
-    selectInstance,
+    selectInstance, crewGroups,
   } = useSessionSources({ historyFilter, slotTitleDigest, localSlots })
   // Opening a crew row is local and instant: the window reads the peer's slot
   // itself, so nothing is created here and there is nothing to wait on.
@@ -2991,6 +3005,25 @@ function ChatSidebar({
   },
     [allRows, filterDimensions, laneOrder, dragFrozen]
   )
+  // Per-machine groups (preview): a row a crew owns, or a local slot whose turns
+  // run on it, leaves the Local lanes and renders under that crew's group, in the
+  // same filtered order. The board keeps every row in its columns, so it groups
+  // nothing.
+  const shownCrewGroups = orderedColumns.length > 0 ? NO_CREW_GROUPS : crewGroups
+  const crewRowsById = useMemo(() => {
+    const byCrew = new Map<string, Slot[]>(shownCrewGroups.map(g => [g.id, []]))
+    for (const s of filteredSlots) {
+      const id = crewOf(s)
+      if (id) byCrew.get(id)?.push(s)
+    }
+    return byCrew
+  }, [shownCrewGroups, filteredSlots])
+  // The Local lanes' rows: `filteredSlots` minus every row a crew group holds.
+  const laneSlots = useMemo(
+    () => (crewRowsById.size === 0 ? filteredSlots : filteredSlots.filter(s => !crewRowsById.has(crewOf(s) ?? ''))),
+    [crewRowsById, filteredSlots],
+  )
+  const [collapsedCrews, toggleCrewCollapsed, expandCrew] = useCollapsedCrews()
 
   const { hoverPinRef, heldDisplacedRef, releaseHoverPin, heldLane, onRootPointerOver } = useHoverHold()
 
@@ -3006,8 +3039,8 @@ function ChatSidebar({
   // exists. Peer OWNERSHIP only: a local slot that merely EXECUTES on a peer is
   // a board citizen like any other and is not counted here.
   const peerRowsHiddenFromBoard = useMemo(
-    () => filteredSlots.filter(isPeerRow).length,
-    [filteredSlots],
+    () => laneSlots.filter(isPeerRow).length,
+    [laneSlots],
   )
   const flatLaneActive = !boardLaneActive && flatView && folders.length > 0
 
@@ -3052,7 +3085,7 @@ function ChatSidebar({
     laneScrollRef,
   )
 
-  useHoverPinLiveness({ hoverPinRef, releaseHoverPin, filteredSlots, boardLaneActive, flatLaneActive, conductorLaneActive, orderedColumns })
+  useHoverPinLiveness({ hoverPinRef, releaseHoverPin, filteredSlots: laneSlots, boardLaneActive, flatLaneActive, conductorLaneActive, orderedColumns })
 
   // The folder filter goes inert while searching, in BOTH views: a query must
   // reach every match, so an unchecked folder can never become a search dead
@@ -3065,7 +3098,7 @@ function ChatSidebar({
   // folders as empty "New chat in <name>" shells).
   const listNarrowed = filterDimensions.some(d => d.narrows !== null && d.narrows())
 
-  useStaleNarrowBridge({ listNarrowed, filteredSlots, staleCollapseMs, sortKey, isStaleExempt, setStaleExpanded, slotFolders })
+  useStaleNarrowBridge({ listNarrowed, filteredSlots: laneSlots, staleCollapseMs, sortKey, isStaleExempt, setStaleExpanded, slotFolders })
   // Reduced motion disables every row. Otherwise renderSessionRow enrolls only
   // the first SIDEBAR_DISPLACEMENT_WINDOW paint positions in layout projection,
   // bounding Framer's measurement set without a total-list-size cliff.
@@ -3097,12 +3130,30 @@ function ChatSidebar({
 
   const {
     isRowFolderHidden, flatSlots,
-  } = useFlatLane({ folderFilterActive, slotFolders, filterHiddenSubtree, filteredSlots })
+  } = useFlatLane({ folderFilterActive, slotFolders, filterHiddenSubtree, filteredSlots: laneSlots })
 
   const {
     citedCreatorExists, conductorRows, conductorMatching, lineage, conductorExpanded, toggleConductorExpanded,
     expandConductorAncestors,
   } = useConductorLane({ conductorLaneActive, allRows, allLiveSlots, isRowFolderHidden, laneOrder, flatSlots })
+  // Crew rows obey the folder filter like every lane's own rows.
+  const shownCrewRows = useMemo(() => {
+    const out = new Map<string, Slot[]>()
+    for (const [id, rows] of crewRowsById) out.set(id, rows.filter(s => !isRowFolderHidden(s)))
+    return out
+  }, [crewRowsById, isRowFolderHidden])
+  const shownCrewRowCount = useMemo(
+    () => [...shownCrewRows.values()].reduce((n, rows) => n + rows.length, 0),
+    [shownCrewRows],
+  )
+  // Reveal opens the crew group holding the target, then the lane's own ancestors.
+  // Looked up in `allRows`: the reveal may be clearing the filter that hides it.
+  const expandRevealAncestors = useCallback((identity: string) => {
+    const row = allRows.find(s => sessionRowIdentity(s) === identity)
+    const crew = row ? crewOf(row) : undefined
+    if (crew && crewRowsById.has(crew)) expandCrew(crew)
+    expandConductorAncestors(identity)
+  }, [allRows, crewRowsById, expandCrew, expandConductorAncestors])
 
   const {
     availableLanes, nextLane, laneSwitchLabel, cycleLane,
@@ -3113,7 +3164,7 @@ function ChatSidebar({
 
   const {
     folderFilterRows,
-  } = useFolderFilterRows({ filteredSlots, slotFolders, folders, folderCompare, filterHiddenFolders, filterHiddenSubtree })
+  } = useFolderFilterRows({ filteredSlots: laneSlots, slotFolders, folders, folderCompare, filterHiddenFolders, filterHiddenSubtree })
 
   const {
     createFolderMutation, deleteFolderMutation, updateFolderMutation, toggleCollapse,
@@ -3139,7 +3190,7 @@ function ChatSidebar({
 
   const {
     revealFlash,
-  } = useSidebarReveal({ sidebarRootRef, dispatch, localSlots, revealBlockingFilters, staleCollapseMs, sortKey, isStaleExempt, slotFolders, setStaleExpanded, expandFolderAncestors, expandConductorAncestors, folders, setSlotFilter, setFilterHiddenFolders, setRevealForcedVisible, setFlatView })
+  } = useSidebarReveal({ sidebarRootRef, dispatch, localSlots, revealBlockingFilters, staleCollapseMs, sortKey, isStaleExempt, slotFolders, setStaleExpanded, expandFolderAncestors, expandConductorAncestors: expandRevealAncestors, folders, setSlotFilter, setFilterHiddenFolders, setRevealForcedVisible, setFlatView })
   const renameCommit = useCallback((id: string, name: string) => {
     if (name.trim()) updateFolderMutation.mutate({ id, body: { name: name.trim() } })
     setEditingId(null)
@@ -3193,7 +3244,7 @@ function ChatSidebar({
   // Always render the folder header (even with 0 matches) so users can see + drop into it.
   const renderColumnFolder = (folder: ChatFolder, columnId: string, colSlotKeys: Set<string>, dragHandleProps?: React.HTMLAttributes<HTMLElement>, forceCollapsed?: boolean): React.ReactNode => {
     const childFolders = folders.filter(f => f.parent_id === folder.id).sort(folderCompare)
-    const { rows: childSlots, navScope: folderLaneScope, container: folderHoldContainer } = heldLane(filteredSlots.filter(s => colSlotKeys.has(sessionRowIdentity(s)) && localSlotFolder(s, slotFolders) === folder.id), columnId, `board:${columnId}:folder:${folder.id}`)
+    const { rows: childSlots, navScope: folderLaneScope, container: folderHoldContainer } = heldLane(laneSlots.filter(s => colSlotKeys.has(sessionRowIdentity(s)) && localSlotFolder(s, slotFolders) === folder.id), columnId, `board:${columnId}:folder:${folder.id}`)
     // A nested folder the person unchecked drops out of the recursion, so neither its
     // header nor anything under it renders. Checking the folder's OWN id is enough:
     // dropping it here takes its descendants with it, the same way the tree's block
@@ -3218,11 +3269,11 @@ function ChatSidebar({
       ? (revealFlash.fading ? 'fade' : 'flash')
       : null
     const count = childSlots.length + deepChildren.filter(cf => {
-      const cfSlots = filteredSlots.filter(s => colSlotKeys.has(sessionRowIdentity(s)) && localSlotFolder(s, slotFolders) === cf.id)
+      const cfSlots = laneSlots.filter(s => colSlotKeys.has(sessionRowIdentity(s)) && localSlotFolder(s, slotFolders) === cf.id)
       return cfSlots.length > 0 || descendantMatch(
         folders,
         cf.id,
-        filteredSlots.filter(s => colSlotKeys.has(sessionRowIdentity(s))),
+        laneSlots.filter(s => colSlotKeys.has(sessionRowIdentity(s))),
         slotFolders,
       )
     }).length
@@ -3555,6 +3606,18 @@ function ChatSidebar({
     )
   }
 
+  // The per-machine group chrome each list lane draws: `Local` above the lane's
+  // own rows, the crew groups below them. Both are null with no crew group.
+  const localGroupHeader = shownCrewGroups.length > 0 ? <LocalGroupHeader /> : null
+  const renderCrewGroups = (): React.ReactNode => shownCrewGroups.map(g => (
+    <CrewGroupSection key={g.id} group={g} rows={shownCrewRows.get(g.id) ?? []}
+      collapsed={collapsedCrews.has(g.id)} onToggle={toggleCrewCollapsed} hideWhenEmpty={listNarrowed}
+      chevron={<DisclosureChevron open={!collapsedCrews.has(g.id)} size={11} />}
+      renderRows={(rows, scope) => rows.map((s, i) => renderSessionRow(
+        s, 0, i < rows.length - 1 && !isActiveRow(s) && !isActiveRow(rows[i + 1]), scope,
+      ))} />
+  ))
+
   // ── Folder row: matches session-row width (full width minus drawer padding) ──
   // Recursively check if a folder or any descendant contains an unread slot.
   const folderTreeHasUnread = (folderId: string, visited = new Set<string>()): boolean => {
@@ -3663,7 +3726,7 @@ function ChatSidebar({
   const narrowedSubtreeShowsSomething = (folder: ChatFolder, visited = new Set<string>()): boolean => {
     if (visited.has(folder.id)) return false
     visited.add(folder.id)
-    if (filteredSlots.some(s => localSlotFolder(s, slotFolders) === folder.id)) return true
+    if (laneSlots.some(s => localSlotFolder(s, slotFolders) === folder.id)) return true
     if (folderNameMatchIds?.has(folder.id)) return true
     if (folderCreateError?.folderId === folder.id) return true
     if (hiddenByContainer.get(folder.id)?.length) return true
@@ -3775,7 +3838,7 @@ function ChatSidebar({
     // `localSlotFolder`, not a raw `slotFolders` lookup: a peer row is never in a
     // folder, and a peer key colliding with a local one would otherwise count a
     // session this machine does not own toward the folder it does.
-    const childSlots = filteredSlots.filter(s => localSlotFolder(s, slotFolders) === folder.id)
+    const childSlots = laneSlots.filter(s => localSlotFolder(s, slotFolders) === folder.id)
     const count = childSlots.length + childFolders.length
     const collapsed = !!folder.collapsed
     // One derivation, not two: `renderFolderBlock` decides the body from the nodes
@@ -4073,7 +4136,7 @@ function ChatSidebar({
   const renderFolderBlock = (folder: ChatFolder, depth: number, visited = new Set<string>(), dragHandleProps?: React.HTMLAttributes<HTMLElement>, forceCollapsed = false): React.ReactNode[] => {
     if (depth > 10 || visited.has(folder.id)) return []
     visited.add(folder.id)
-    const childSlots = filteredSlots.filter(s => localSlotFolder(s, slotFolders) === folder.id)
+    const childSlots = laneSlots.filter(s => localSlotFolder(s, slotFolders) === folder.id)
     const childNodes: React.ReactNode[] = []
     // Nested subfolders are sortables, exactly as root folders are: dragging one
     // either re-orders it among its siblings (drop on a sibling's edges or body)
@@ -4212,7 +4275,7 @@ function ChatSidebar({
 
   const {
     rootFolders, visibleRootFolders, rootFolderIds, ungroupedSlots,
-  } = useRootFolderLanes({ folders, folderCompare, isFolderHidden, isFolderFilteredOut, filteredSlots, slotFolders })
+  } = useRootFolderLanes({ folders, folderCompare, isFolderHidden, isFolderFilteredOut, filteredSlots: laneSlots, slotFolders })
   // True while actively dragging a session that currently lives in a folder.
   // Used to reveal the empty-state drop placeholder inside the "No folder"
   // group so there's always a reachable ungroup target.
@@ -5632,6 +5695,7 @@ function ChatSidebar({
           <SessionRowWindowContext.Provider value={laneRowWindow.rowWindow}>
           <motion.div ref={setLaneScrollEl} onScroll={laneScrollMemory.onScroll} layoutScroll={rowAnimEnabled} className={`${LIST_BODY_CLS} flex flex-col`} style={{ scrollbarWidth: 'none' }} data-testid="conductor-view-lane">
             {folderCreateError && renderFolderCreateError(folderCreateError.folderId, folderCreateError.columnId)}
+            {localGroupHeader}
             {(() => {
               const tree = lineage
               if (!tree) return null
@@ -5753,7 +5817,7 @@ function ChatSidebar({
                 )
               })
             })()}
-            {flatSlots.length === 0 && (
+            {flatSlots.length === 0 && shownCrewRowCount === 0 && (
               <div className="px-3 py-4 text-[12px] text-muted">{i18nT('pages.chatSidebar.no_sessions_match')}</div>
             )}
             {flatSlots.length > 0 && lineage != null && lineage.children.size === 0 && allHiddenFolders.length === 0 && (
@@ -5771,6 +5835,7 @@ function ChatSidebar({
             )}
             {renderHiddenReveal('conductor', allHiddenFolders, 0)}
             {renderOlderSessionsHint('conductor')}
+            {renderCrewGroups()}
           </motion.div>
           </SessionRowWindowContext.Provider>
         ) : flatLaneActive ? (
@@ -5809,6 +5874,7 @@ function ChatSidebar({
                *  notice at the top of the lane so a failed folder create is
                *  never console-only in this layout. */}
               {folderCreateError && renderFolderCreateError(folderCreateError.folderId, folderCreateError.columnId)}
+              {localGroupHeader}
               {(() => {
                 // Date segments (Today / Yesterday / Last 7 Days / …) between
                 // rows — resurrects the 9bb0f71 active-list pattern: only for
@@ -5851,13 +5917,14 @@ function ChatSidebar({
                   )
                 })
               })()}
-              {flatSlots.length === 0 && (
+              {flatSlots.length === 0 && shownCrewRowCount === 0 && (
                 <div className="px-3 py-4 text-[12px] text-muted">{i18nT('pages.chatSidebar.no_sessions_match')}</div>
               )}
               {/* Flat view has no containers to anchor to — every hide, top-level
                *  or nested, collapses into this one row at the bottom of the lane. */}
               {renderHiddenReveal('flat', allHiddenFolders, 0)}
               {renderOlderSessionsHint('flat')}
+              {renderCrewGroups()}
             </motion.div>
             </SessionRowWindowContext.Provider>
             {dragOverlay}
@@ -5901,6 +5968,7 @@ function ChatSidebar({
               <DndDroppable id="root-lane" data={{ type: 'folder-drop', folderId: null }}>
                 {({ setNodeRef }) => (
                   <div ref={setNodeRef} className="flex flex-col flex-1 min-h-0">
+                    {localGroupHeader}
                     <SortableContext items={rootFolderIds} strategy={verticalListSortingStrategy}>
                       {visibleRootFolders.map(f => <SortableFolderBlock key={f.id} folder={f} subtree={[...(folderSubtrees.get(f.id) ?? collectFolderSubtreeIds(folders, f.id))]} siblings={rootFolderIds} reorderable={folderReorderable} dragWithheld={folderDragWithheld} renderFolderBlock={renderFolderBlock} />)}
                     </SortableContext>
@@ -5909,7 +5977,7 @@ function ChatSidebar({
                      *  footer row" shape — the nested case is what needs depth. */}
                     {renderHiddenReveal('root', hiddenByContainer.get('root') ?? [], 0)}
                     {/* Every folder block and the ungrouped bucket read
-                        filteredSlots, so an empty one means nothing can render
+                        laneSlots, so an empty one means nothing can render
                         below — say so rather than leaving a blank lane.
                         A folder-NAME search is the case where the plain wording
                         lies: the matched folder rows are rendered directly above
@@ -5925,7 +5993,7 @@ function ChatSidebar({
                         list, and a sentence claiming it matched is the same
                         contradiction with the roles reversed. It claims only that
                         a folder name matched; the marks say which row. */}
-                    {filteredSlots.length === 0 && listNarrowed && (
+                    {laneSlots.length === 0 && shownCrewRowCount === 0 && listNarrowed && (
                       <div className="px-3 py-4 text-[12px] text-muted">{i18nT(folderNameMatchIds ? 'pages.chatSidebar.no_sessions_match_folders' : 'pages.chatSidebar.no_sessions_match')}</div>
                     )}
                     {/* Ungrouped sessions live in a headerless droppable bucket
@@ -5933,7 +6001,7 @@ function ChatSidebar({
                      *  folders, so the whole empty lower area is a drop target —
                      *  dropping a session here ungroups it. The ring only lights up
                      *  while dragging a foldered session (when ungrouping applies). */}
-                    {(rootFolders.length > 0 || ungroupedSlots.length > 0) && (
+                    {(rootFolders.length > 0 || ungroupedSlots.length > 0 || shownCrewGroups.length > 0) && (
                       <DndDroppable id="root-group" data={{ type: 'folder-drop', folderId: null }}>
                         {({ setNodeRef: setRootGroupRef, isOver }) => (
                           <div ref={setRootGroupRef} className={`flex flex-col flex-1 min-h-0 rounded-md transition-all ${isOver && (draggingFolderedSession || draggingNestedFolder) ? 'ring-1 ring-accent' : ''}`}>
@@ -5966,6 +6034,7 @@ function ChatSidebar({
                                   {/* After the dormant expander, so it stays the
                                    *  lane's last line even when rows are folded. */}
                                   {renderOlderSessionsHint('root')}
+                                  {renderCrewGroups()}
                                 </>
                               )
                             })()}
@@ -6083,7 +6152,7 @@ function ChatSidebar({
               // "no sessions" notice. The board lane has no reveal row (a column has no
               // folder header for one to hang from), so the hide is absolute here and the
               // way back is re-checking the folder in the filter menu.
-              const colSlots = filteredSlots.filter(s => !isPeerRow(s) && columnMatches(col, s) && !isRowFolderHidden(s))
+              const colSlots = laneSlots.filter(s => !isPeerRow(s) && columnMatches(col, s) && !isRowFolderHidden(s))
               const colTags = col.tag_ids.map(tid => tagById[tid]).filter(Boolean) as ChatTag[]
               const laneDef = col.source === 'state' ? SESSION_LANES.find(l => l.key === col.state_key) : undefined
               // Only a single-status-tag column can accept a card: dropping onto a
