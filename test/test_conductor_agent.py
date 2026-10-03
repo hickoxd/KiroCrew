@@ -271,6 +271,7 @@ class TestConductorInstaller:
             "@kirocrew-core/send_message",
             "@kirocrew-core/send_notification",
             "@kirocrew-core/ask_question",
+            "@kirocrew-core/nothing_to_do",
         }
         # The bare server is what this test exists to keep out: it would re-grant
         # all 74 registered core tools, including every verb named below.
@@ -619,6 +620,7 @@ class TestConductorInstaller:
             "@kirocrew-core/send_message",
             "@kirocrew-core/send_notification",
             "@kirocrew-core/ask_question",
+            "@kirocrew-core/nothing_to_do",
             "@kirocrew-dashboard/chat_folder_tree",
             "@kirocrew-dashboard/chat_folder_create",
             "@kirocrew-dashboard/chat_folder_file_self",
@@ -649,6 +651,7 @@ class TestConductorInstaller:
             "kirocrew-core/list_sessions",
             "kirocrew-core/monitor_start",
             "kirocrew-core/monitor_update",
+            "kirocrew-core/nothing_to_do",
             "kirocrew-core/resource_status",
             "kirocrew-core/select_crew",
             "kirocrew-core/send_message",
@@ -813,6 +816,7 @@ class TestConductorInstaller:
             "@kirocrew-core/send_message",
             "@kirocrew-core/send_notification",
             "@kirocrew-core/ask_question",
+            "@kirocrew-core/nothing_to_do",
             "@kirocrew-dashboard/chat_folder_tree",
             "@kirocrew-dashboard/chat_folder_create",
             "@kirocrew-dashboard/chat_folder_file_self",
