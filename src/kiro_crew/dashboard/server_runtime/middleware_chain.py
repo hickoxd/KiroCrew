@@ -31,6 +31,7 @@ if TYPE_CHECKING:
         logger,
         make_route_latency_middleware,
         mark_audit_claimed,
+        reject_compressed_body_middleware,
         resolve_dashboard_host,
         sel,
         slot_ownership_middleware,
@@ -212,6 +213,11 @@ def _install_dashboard_middlewares(
         deny_audit_middleware,
         host_canonical_redirect,
         host_validation_middleware,
+        # Compressed request bodies are refused outright (415): the hardened
+        # runner runs with auto_decompress=False (see dashboard.slowloris), so
+        # they could never be served — this gives senders the honest error
+        # before any handler reads raw compressed bytes.
+        reject_compressed_body_middleware,
         no_cache_middleware,
         csrf_middleware,
         token_auth_middleware(
@@ -322,6 +328,9 @@ def _install_api_middlewares(
         # POSITION here, not by each deny site remembering to.
         deny_audit_middleware,
         host_validation_middleware,
+        # 415 for compressed request bodies — same rationale as start_dashboard
+        # (the hardened runner never decompresses; see dashboard.slowloris).
+        reject_compressed_body_middleware,
         csrf_middleware,
         token_auth_middleware(
             internal_paths=_STRICT_INTERNAL_API_PATHS,

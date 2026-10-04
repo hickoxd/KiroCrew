@@ -347,7 +347,10 @@ from kiro_crew.dashboard.server_runtime.workflow_startup import (  # noqa: F401
     _register_workflow_lifecycle,
 )
 from kiro_crew.dashboard.slot_ownership import slot_ownership_middleware  # noqa: F401
-from kiro_crew.dashboard.slowloris import build_hardened_runner
+from kiro_crew.dashboard.slowloris import (  # noqa: F401
+    build_hardened_runner,
+    reject_compressed_body_middleware,
+)
 from kiro_crew.dashboard.state import _DEFAULT_PORT, DashboardState
 from kiro_crew.dashboard.token_auth import (  # noqa: F401
     _cookie_port_from_host,
