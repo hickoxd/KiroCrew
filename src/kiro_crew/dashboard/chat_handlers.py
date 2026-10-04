@@ -10914,6 +10914,22 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
     context_entry: dict[str, object] | None = None
     if _source_cap_reached(slot, source):
         context_skipped = True
+    elif deferred and not slot.has_pending_context_seat():
+        # The HELD path must refuse the context half at admission, the same way
+        # the immediate arm does when ``append_pending_context`` returns False.
+        # A held note's context is seated later, by ``flush_deferred_notes`` ->
+        # ``append_pending_context`` at turn end; if the queue is already at the
+        # seat ceiling now, that append will refuse, and the only trace is
+        # ``row_meta["contextDropped"]`` -- nothing the caller ever sees. So the
+        # note would be acknowledged (200, ``visibleDeferred``) with its context
+        # silently dropped: the acknowledge-then-lose behaviour this endpoint
+        # exists to remove, moved onto the held path. ``has_pending_context_seat``
+        # counts live entries PLUS each held note's reserved context half, so the
+        # check is accurate: a later ``/context`` arrival cannot take the seat the
+        # flush would need, and expiry between now and the flush can only free
+        # seats, never consume them. We hold the VISIBLE line regardless (the
+        # audit record the caller came for) and report contextSkipped=true.
+        context_skipped = True
     else:
         max_age = body.get("maxAge", _UNSET)
         if max_age is _UNSET:
