@@ -2848,16 +2848,30 @@ function ChatSidebar({
     // A paused filter keeps its chip but narrows nothing, so the whole status
     // dimension goes inert while the pause is on.
     const activeFilterDefs = filtersPaused ? [] : SESSION_FILTERS.filter(filterDef => activeFilters.has(filterDef.key))
+    // A pinned session is one the person chose to keep in sight, and the
+    // pinned band is the stable top of the list (`compareLocalPinnedThenSort`).
+    // The two property filters (tags, status chips) therefore exempt it: the
+    // band stays, the narrowed rows sit under it, and the chip counts still
+    // count matches (`filterCounts` reads the predicates, not this list). The
+    // search is NOT exempt — a query names one session, and a non-matching
+    // pinned row in its results is noise — and neither is a folder hide, which
+    // means "hide all of this". Same predicate as the Pinned chip, so a peer
+    // row (never pinned) is never exempt. `narrows` is untouched: the list IS
+    // narrowed; the pinned rows are exempt from it.
+    const pinnedBypass = _derivedLookup.pinned
     return [
       {
         // Tags. Unlike the folder filter this does NOT go inert while
         // searching: it is a session property, so it behaves like the
         // Unread/Pinned status chips.
-        filtersRow: slot => activeTagIds.size === 0 || (slot.tags ?? []).some(id => activeTagIds.has(id)),
+        filtersRow: slot => activeTagIds.size === 0 || pinnedBypass(slot) || (slot.tags ?? []).some(id => activeTagIds.has(id)),
         narrows: () => activeTagIds.size > 0,
         // Raw `filterTagIds`, not resolved `activeTagIds`, and not behind
         // `excluded`: mid-flight nothing is filtered, so the row is re-hidden.
-        hides: slot => filterTagIds.size > 0 && !(slot.tags ?? []).some(id => filterTagIds.has(id)),
+        // The pinned exemption is restated here because this predicate does
+        // not go through `excluded`: a reveal of a pinned row must not clear a
+        // tag filter that was never hiding it.
+        hides: slot => filterTagIds.size > 0 && !pinnedBypass(slot) && !(slot.tags ?? []).some(id => filterTagIds.has(id)),
         clear: () => clearTagFilter(),
       },
       {
@@ -2897,10 +2911,14 @@ function ChatSidebar({
         // Status chips (SESSION_FILTERS). Active chips OR together: a row
         // passes when any active chip's predicate matches it. `activeFilterDefs`
         // is empty while the filters are paused, so every row passes and the
-        // dimension neither narrows nor hides.
-        filtersRow: slot => activeFilterDefs.length === 0 || activeFilterDefs.some(filterDef => _derivedLookup[filterDef.key](slot)),
+        // dimension neither narrows nor hides. A pinned row passes whatever the
+        // chips say (see `pinnedBypass`). `hides` restates the exemption too:
+        // `excluded` is list membership, not this dimension's verdict, so a
+        // pinned row the SEARCH dropped would otherwise read as hidden by the
+        // chips and a reveal would clear them.
+        filtersRow: slot => activeFilterDefs.length === 0 || pinnedBypass(slot) || activeFilterDefs.some(filterDef => _derivedLookup[filterDef.key](slot)),
         narrows: () => activeFilterDefs.length > 0,
-        hides: (slot, excluded) => activeFilterDefs.length > 0 && excluded(slot),
+        hides: (slot, excluded) => activeFilterDefs.length > 0 && !pinnedBypass(slot) && excluded(slot),
         // Persisted inside the hook: a remount re-reads the stored '1' (or '2')
         // and would silently restore the filter that hides this row.
         clear: () => clearAllFilters(),
