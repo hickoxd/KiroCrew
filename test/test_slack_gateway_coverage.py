@@ -47,6 +47,36 @@ from kiro_crew.monitoring.models import (
 from kiro_crew.session import SessionBusyError, SessionClosingError
 from kiro_crew.slack import gateway as gw
 
+#: Lost-run ceiling for a wait the test itself must end (a turn it parks, a
+#: replay it releases). A nudge turn's pre-turn chain makes real executor hops
+#: (governance, store, embed pool). Timed wait by wait: at most 0.03 s at ``-n 4``
+#: on a loaded 32-CPU host, and at most 4.8 s with every executor hop delayed by
+#: 1.2 s (a starved-runner model). 60 s is over ten times that and half the
+#: module's ``--timeout=120``, so only a run that never gets there reaches it.
+_LOST_RUN_SECS = 60.0
+
+
+async def _within_lost_run(awaitable, what: str):
+    """Await *awaitable* under ``_LOST_RUN_SECS``; on expiry fail naming *what*.
+
+    A bare ``wait_for`` raises an empty ``TimeoutError``. This one says what never
+    finished, the ceiling and the elapsed time. A ``TimeoutError`` the awaited code
+    raises on its own, before the ceiling, propagates unchanged.
+    """
+    started = time.monotonic()
+    try:
+        return await asyncio.wait_for(awaitable, _LOST_RUN_SECS)
+    except asyncio.TimeoutError:
+        elapsed = time.monotonic() - started
+        # A loop timer can fire up to one clock tick early (15.6 ms on Windows 3.12).
+        if elapsed < _LOST_RUN_SECS - 1.0:
+            raise
+        pytest.fail(
+            f"{what} did not finish within the {_LOST_RUN_SECS:.0f}s lost-run ceiling "
+            f"({elapsed:.1f}s elapsed)"
+        )
+
+
 # ─── Helpers ─────────────────────────────────────────────────────────────
 
 
@@ -648,7 +678,10 @@ class TestFireSlackNudgeGuards:
         monkeypatch.setattr(gw, "_NUDGE_TURN_TIMEOUT", 0.01)
         monkeypatch.setattr(gw, "_persist_turn_row", persist)
 
-        result = await orch._fire_slack_nudge(loop, "[Monitor wake]")
+        # Bounded: only the patched 0.01 s turn bound ends the stalled authorization.
+        result = await _within_lost_run(
+            orch._fire_slack_nudge(loop, "[Monitor wake]"), "the nudge with a stalled authorization"
+        )
 
         assert result is monitor_models.MonitorDispatchResult.BUSY
         service.monitor_dispatch_is_authorized.assert_awaited_once_with(loop.id, "failure-a")
@@ -840,8 +873,9 @@ class TestFireSlackNudgeGuards:
         if times_out:
             monkeypatch.setattr(gw, "_NUDGE_TURN_TIMEOUT", 0.01)
 
+        # Bounded: with times_out only the patched 0.01 s turn bound ends the stream.
         with pytest.raises(asyncio.CancelledError):
-            await orch._fire_slack_nudge(loop)
+            await _within_lost_run(orch._fire_slack_nudge(loop), "the nudge turn")
 
         assert order == ["completion", "persist"]
 
@@ -881,11 +915,13 @@ class TestFireSlackNudgeGuards:
             return_value=(_CompletedThenBlockedProvider(), False, False)
         )
         task = asyncio.create_task(orch._fire_slack_nudge(loop, "[Monitor wake]"))
-        await asyncio.wait_for(completed.wait(), timeout=1)
-
-        task.cancel()
+        try:
+            # The pre-turn chain makes real executor hops before the stream starts.
+            await _within_lost_run(completed.wait(), "the nudge turn's completion")
+        finally:
+            task.cancel()
         with pytest.raises(asyncio.CancelledError):
-            await task
+            await _within_lost_run(task, "the cancelled nudge")
 
         service.record_monitor_turn_completion.assert_awaited_once()
         completion = _awaited(service.record_monitor_turn_completion).args[0]
@@ -1335,12 +1371,18 @@ class TestAutonudgeRouterAndObserver:
         )
 
         startup = asyncio.create_task(self._wire(orch, existing_loops=[loop]))
-        await notification_started.wait()
+        try:
+            await _within_lost_run(
+                notification_started.wait(), "startup's replay of the terminal notice"
+            )
+        finally:
+            if not notification_started.is_set():
+                startup.cancel()
         await asyncio.sleep(0)
         startup_blocked = not startup.done()
 
         persisted.set_result(True)
-        _on_fire, observer, inst = await startup
+        _on_fire, observer, inst = await _within_lost_run(startup, "startup after the persist")
         await asyncio.sleep(0)
 
         observer("updated", loop)

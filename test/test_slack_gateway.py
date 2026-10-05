@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import contextlib
+import importlib
 import inspect
 import json
 import logging
@@ -34,6 +35,85 @@ from kiro_crew.slack.gateway import (
     GatewayOrchestrator,
     _result_hash,
 )
+
+#: Lost-run ceiling for a wait the test itself must end (a stub it parks, a
+#: writer it holds, a signal production raises on the way). Timed wait by wait,
+#: every one of them took at most 0.04 s at ``-n 4`` on a loaded 32-CPU host and
+#: at most 0.01 s with every executor hop delayed by 1.2 s (a starved-runner
+#: model). The one exception spans a whole update and waits on progress instead
+#: (see ``_PROGRESS_WINDOW_SECS``). 60 s is half the module's ``--timeout=120``.
+_LOST_RUN_SECS = 60.0
+
+#: The lost-run ceiling of a wait that spans many executor hops: how long it may go
+#: without a hop being submitted or finishing. Over ten times one hop's 1.2 s under
+#: the starved-runner model. The update ahead of the queued reinstall makes about
+#: nine such hops (the whole test took 10.9 s under that model, 0.04 s at ``-n 4``),
+#: so a slow pool keeps the wait alive while a wedged one fails within one window.
+#: Such a wait is also capped at ``_LOST_RUN_SECS`` in all: a livelock backstop held
+#: at the half-timeout limit, not a race bound.
+_PROGRESS_WINDOW_SECS = 15.0
+
+
+async def _until_set_while_progressing(event, progress, what: str) -> None:
+    """Wait for *event* while ``progress()`` keeps changing.
+
+    For a wait that spans many executor hops: a slow pool keeps it alive, and it
+    fails once a whole ``_PROGRESS_WINDOW_SECS`` passes with no change, or after
+    ``_LOST_RUN_SECS`` in all, naming *what* and the elapsed time.
+    """
+    started = last_change = time.monotonic()
+    seen = progress()
+    while not event.is_set():
+        now = time.monotonic()
+        if progress() != seen:
+            seen, last_change = progress(), now
+        if now - last_change > _PROGRESS_WINDOW_SECS or now - started > _LOST_RUN_SECS:
+            pytest.fail(
+                f"{what} did not happen: {now - started:.1f}s elapsed, "
+                f"{now - last_change:.1f}s since the last progress (count {seen})"
+            )
+        await asyncio.sleep(0.05)
+
+
+async def _within_lost_run(awaitable, what: str):
+    """Await *awaitable* under ``_LOST_RUN_SECS``; on expiry fail naming *what*.
+
+    A bare ``wait_for`` raises an empty ``TimeoutError``. This one says what never
+    finished, the ceiling and the elapsed time. A ``TimeoutError`` the awaited code
+    raises on its own, before the ceiling, propagates unchanged.
+    """
+    started = time.monotonic()
+    try:
+        return await asyncio.wait_for(awaitable, _LOST_RUN_SECS)
+    except asyncio.TimeoutError:
+        elapsed = time.monotonic() - started
+        # A loop timer can fire up to one clock tick early (15.6 ms on Windows 3.12).
+        if elapsed < _LOST_RUN_SECS - 1.0:
+            raise
+        pytest.fail(
+            f"{what} did not finish within the {_LOST_RUN_SECS:.0f}s lost-run ceiling "
+            f"({elapsed:.1f}s elapsed)"
+        )
+
+
+class _ImportlibWithoutReload:
+    """``importlib`` as the gateway sees it, except that ``reload`` returns its argument.
+
+    A completed update re-imports ``kiro_crew`` to log the rebuilt version. In a
+    test that re-runs ``kiro_crew/__init__.py`` inside the worker's one package
+    and leaves a NEW ``kiro_crew.shutdown_event`` there, while every module that
+    imported the name keeps the old object. A later test on the same worker that
+    sets ``kiro_crew.shutdown_event`` then never wakes ``gateway.run()``:
+    ``TestRunMethod::test_run_raises_on_shutdown`` hung to ``--timeout`` behind
+    any update test that completes an update (15 tests in the venv and reset
+    classes). Only the gateway's binding is replaced.
+    """
+
+    def reload(self, module):
+        return module
+
+    def __getattr__(self, name):
+        return getattr(importlib, name)
 
 
 def _install_effect(effect: str = "install", route: str | None = "git"):
@@ -3413,6 +3493,9 @@ class TestAutoApplyUpdateGitPath:
                 "kiro_crew.slack.gateway.platform_compat.trusted_git_bin",
                 return_value="/trusted/bin/git",
             ),
+            # A completed update reloads the kiro_crew package; see
+            # _ImportlibWithoutReload for what that left the next test.
+            patch.object(gw, "importlib", _ImportlibWithoutReload()),
             patch(
                 # The interpreter-floor gate reads the pinned commit with a real
                 # `git show`; against a non-repo that read FAILS, and a failed read
@@ -3660,23 +3743,39 @@ class TestRunMethod:
 
         events = []
         stall = threading.Event()
+        write_started = threading.Event()
+        late_cleared = threading.Event()
         original_write_marker = run_marker.write_marker
         original_clear_marker = run_marker.clear_marker
         original_clear_late = run_marker.clear_late_marker_write
 
         def stalled_write_marker(port):
             events.append("write-start")
-            stall.wait(5.0)  # far longer than the shrunk 0.05s budget
+            write_started.set()
+            # Held until the finally below releases it, so the shutdown finds the
+            # write in flight however long the boot before it takes. No timeout on
+            # purpose: any bound here is a wall-clock bound on run()'s boot, which is
+            # the race this replaced (the old 5 s stall ended on its own under a
+            # slow boot), and the finally always releases it.
+            stall.wait()
             original_write_marker(port)  # late write republishes the marker
             events.append("write-end")
 
         def recording_clear_marker(port):
+            # The case is a clear that lands WHILE the write is stalled. On a
+            # starved pool the writer can still be queued when the 0.05 s budget
+            # expires, so wait for it to start rather than race it.
+            if not write_started.wait(_LOST_RUN_SECS):
+                events.append("writer-never-started")
             events.append("clear")
             original_clear_marker(port)
 
         def recording_clear_late(port):
             events.append("late-clear")
-            return original_clear_late(port)
+            try:
+                return original_clear_late(port)
+            finally:
+                late_cleared.set()
 
         monkeypatch.setattr(run_marker, "write_marker", stalled_write_marker)
         monkeypatch.setattr(run_marker, "clear_marker", recording_clear_marker)
@@ -3722,10 +3821,9 @@ class TestRunMethod:
             # teardown would restore the real config_dir/write_marker and the
             # worker would wake later and write markers OUTSIDE tmp_path.
             stall.set()
-            for _ in range(200):  # up to ~10s; normally a few ms
-                if "write-start" not in events or "late-clear" in events:
-                    break
-                await asyncio.sleep(0.05)
+            if write_started.is_set():
+                # Bounded inside the thread: a cancelled to_thread cannot stop it.
+                await asyncio.to_thread(late_cleared.wait, _LOST_RUN_SECS)
 
         # The stalled write did not complete before the bounded wait expired,
         # yet the marker was cleared and graceful shutdown still ran — the
@@ -3743,6 +3841,10 @@ class TestRunMethod:
         # does not identify its owner, so it removes only this process's own
         # write and only while the pid record still names this process. The
         # shutdown-side ``clear_marker`` runs once and holds the listener.
+        assert late_cleared.is_set(), (
+            f"the released writer did not self-clear within the {_LOST_RUN_SECS:.0f}s "
+            f"lost-run ceiling: {events}"
+        )
         assert "write-end" in events
         assert events.index("write-end") > events.index("clear")
         assert events.count("clear") == 1  # the timed-out shutdown clear
@@ -4394,6 +4496,9 @@ class TestAutoApplyUpdateVenvPath:
                 "kiro_crew.slack.gateway.platform_compat.trusted_git_bin",
                 return_value="/trusted/bin/git",
             ),
+            # A completed update reloads the kiro_crew package; see
+            # _ImportlibWithoutReload for what that left the next test.
+            patch.object(gw, "importlib", _ImportlibWithoutReload()),
             patch(
                 # The interpreter-floor gate reads the pinned commit with a real
                 # `git show`; against a non-repo that read FAILS, and a failed read
@@ -5244,6 +5349,9 @@ class TestAutoApplyUpdateResetPath:
                 "kiro_crew.slack.gateway.platform_compat.trusted_git_bin",
                 return_value="/trusted/bin/git",
             ),
+            # A completed update reloads the kiro_crew package; see
+            # _ImportlibWithoutReload for what that left the next test.
+            patch.object(gw, "importlib", _ImportlibWithoutReload()),
             patch(
                 # The interpreter-floor gate reads the pinned commit with a real
                 # `git show`; against a non-repo that read FAILS, and a failed read
@@ -5521,26 +5629,53 @@ class TestAutoApplyUpdateResetPath:
         orch = _make_orchestrator()
         orch.dashboard_state = _mock_dashboard_state()
         orch.sessions = _mock_sessions()
-        pool = concurrent.futures.ThreadPoolExecutor(1)
+        reinstall_queued = asyncio.Event()
+
+        class _SaturatedPool(concurrent.futures.ThreadPoolExecutor):
+            """One worker, held by the test; reports the next job it is handed."""
+
+            def submit(self, fn, /, *args, **kwargs):
+                future = super().submit(fn, *args, **kwargs)
+                if fn != busy.wait:
+                    reinstall_queued.set()  # run_in_executor submits on the loop thread
+                return future
+
         busy = threading.Event()
-        pool.submit(busy.wait, 5)  # the one worker is taken
+        pool = _SaturatedPool(1)
+        # The one worker is taken until the finally releases it. No timeout on
+        # purpose: a wall-clock hold could end while a slow update was still on its
+        # way to the reinstall, and the finally always releases it.
+        pool.submit(busy.wait)
         ran = []
-        queued = asyncio.Event()
 
         async def _build(*_a, **_k):
             # From here on the reinstall goes to the saturated pool.
             monkeypatch.setattr(gw, "subprocess_executor", lambda: pool)
-            queued.set()
 
+        # The update ahead of the reinstall makes about nine executor hops; count
+        # them (submitted and finished) so the wait below can tell slow from stuck.
+        loop = asyncio.get_running_loop()
+        hops = [0]
+        real_run_in_executor = loop.run_in_executor
+
+        def _counted(executor, func, *args):
+            hops[0] += 1
+            future = real_run_in_executor(executor, func, *args)
+            future.add_done_callback(lambda _f: hops.__setitem__(0, hops[0] + 1))
+            return future
+
+        monkeypatch.setattr(loop, "run_in_executor", _counted)
         task = asyncio.ensure_future(
             self._run_git_apply(orch, sync=lambda *a, **k: ran.append(1) or 0, build=_build)
         )
         try:
-            await asyncio.wait_for(queued.wait(), timeout=5.0)
-            await asyncio.sleep(0)  # let the reinstall be submitted behind the busy worker
+            # The reinstall is queued behind the busy worker: cancel now.
+            await _until_set_while_progressing(
+                reinstall_queued, lambda: hops[0], "the update reaching the queued reinstall"
+            )
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
-                await task
+                await _within_lost_run(task, "the cancelled update")
         finally:
             busy.set()
             pool.shutdown(wait=True)
@@ -9481,13 +9616,14 @@ class TestWheelAutoApplyUsesTheShadowEngine:
         orch._pending_update_respawn = lambda: "/x/python3"
         orch._pending_update_mandatory = True
         orch._pending_update_mandatory_key = "floor:9.9.9"
-        loop = asyncio.get_running_loop()
-        now = [1000.0]
-        monkeypatch.setattr(loop, "time", lambda: now[0])
 
         with caplog.at_level(logging.WARNING, logger="kiro_crew.slack.gateway"):
             await orch._retry_pending_update_restart()
-            now[0] += orch._MANDATORY_UPDATE_MAX_DEFER_SECS + 1
+            # Age the recorded deferral rather than freezing ``loop.time``: the
+            # loop clock is the one every timer on this loop waits on, so a
+            # frozen one strands any bounded await the retry path makes.
+            assert orch._mandatory_update_deferred_at is not None
+            orch._mandatory_update_deferred_at -= orch._MANDATORY_UPDATE_MAX_DEFER_SECS + 1
             await orch._retry_pending_update_restart()
 
         assert "remains deferred after its grace period" in caplog.text
