@@ -2220,10 +2220,15 @@ def test_a_channel_link_written_to_the_line_during_the_read_is_seen_by_the_hook(
 
 
 def test_an_unreadable_final_identity_read_refuses_rather_than_publishing(tmp_path, monkeypatch):
-    """The synchronous identity read after the last await is the one place
-    nothing follows: an unreadable answer there is the delete-and-recreate's
-    own signature (the file being rewritten) and refuses ``resume_conflict``
-    instead of falling through, with the marker rolled back."""
+    """A mutation landing after the last await refuses rather than publishing.
+
+    The identity re-read runs off the loop so it survives a transient Windows
+    file lock, then the containment pass is the last await. A delete or
+    delete-and-recreate landing in that pass bumps the key's invalidation
+    generation; the synchronous generation re-check after the pass is the
+    delete-and-recreate's lock-free signature, and refuses ``resume_conflict``
+    with the marker rolled back instead of publishing over it.
+    """
     from kiro_crew.dashboard import chat_handlers
 
     state = _make_state(tmp_path)
@@ -2231,22 +2236,16 @@ def test_an_unreadable_final_identity_read_refuses_rather_than_publishing(tmp_pa
     key = _archive(state, caller, _slot(state, "chat-2"))
     log = state.conversation_log
     hk = f"dashboard:{key}"
-    real_status = log.get_metadata_status
     passes: list[int] = []
-    flags: dict = {}
 
     async def _count(_built):
         passes.append(1)
         if len(passes) == 2:
-            flags["unreadable_next"] = True  # the very next read is the final one
+            # A delete-and-recreate landing during the last await bumps the
+            # generation under the file lock, which the re-check below catches.
+            log._invalidate_cache(hk)
         return None
 
-    def _status(k):
-        if flags.pop("unreadable_next", False):
-            return {}, False
-        return real_status(k)
-
-    monkeypatch.setattr(log, "get_metadata_status", _status)
     outcome = asyncio.run(
         chat_handlers.resume_slot_from_history(state, name=key, history_key=hk, containment=_count)
     )
