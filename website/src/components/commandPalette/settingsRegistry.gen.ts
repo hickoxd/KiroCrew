@@ -1624,6 +1624,16 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "developer.automatic-cards-for-all-sessions",
+    "label": "Automatic cards for all sessions",
+    "labelKey": "commandCenter.automatic_cards",
+    "description": "Summaries of each session’s recent work and next steps.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "configKey": "dashboard.dynamic_dashboard_cards"
+  },
+  {
     "id": "developer.chat-on-a-crew",
     "label": "Chat on a crew",
     "labelKey": "pages.developer.featurePreviewsTab.chat_on_a_crew",

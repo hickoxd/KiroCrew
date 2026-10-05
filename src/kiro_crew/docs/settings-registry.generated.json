@@ -932,6 +932,14 @@
       "description": "Publish an artifact to a public HTTPS URL in your own AWS account. Off by default: every deploy spends money in your account and serves the content on the open internet."
     },
     {
+      "id": "developer.automatic-cards-for-all-sessions",
+      "label": "Automatic cards for all sessions",
+      "tab": "developer",
+      "route": "/settings/developer?highlight=key%3Adashboard.dynamic_dashboard_cards",
+      "description": "Summaries of each session’s recent work and next steps.",
+      "configKey": "dashboard.dynamic_dashboard_cards"
+    },
+    {
       "id": "developer.chat-on-a-crew",
       "label": "Chat on a crew",
       "tab": "developer",
