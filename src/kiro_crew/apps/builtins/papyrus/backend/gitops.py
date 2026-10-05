@@ -397,6 +397,12 @@ async def _git(
         # --- hooks that fire on ordinary porcelain ---------------------------------
         "-c",
         "core.hooksPath=/dev/null",
+        "-c",
+        "diff.ignoreSubmodules=dirty",
+        "-c",
+        "fetch.recurseSubmodules=no",
+        "-c",
+        "submodule.recurse=false",
         *hook_off,
         # `core.fsmonitor` holds the PATHNAME OF A HOOK that `git status`/`add` run on
         # every invocation — the same class as `sshCommand`. `false` is the documented
@@ -490,9 +496,7 @@ async def _git(
     except asyncio.TimeoutError as exc:
         if proc is not None and proc.returncode is None:
             try:
-                await platform_compat.kill_process_tree_async(
-                    proc.pid, platform_compat.SIGKILL
-                )
+                await platform_compat.kill_process_tree_async(proc.pid, platform_compat.SIGKILL)
             except (ProcessLookupError, OSError, ValueError):
                 logger.debug("papyrus: git %s already gone before kill", args[:1])
             try:
@@ -683,9 +687,7 @@ async def pull(project: Path) -> tuple[str, bool]:
         stashed = code == 0 and "no local changes" not in (out + err).lower()
 
     try:
-        code, out, err = await _git(
-            ["pull", "--rebase"], cwd=project, timeout=NETWORK_TIMEOUT_SEC
-        )
+        code, out, err = await _git(["pull", "--rebase"], cwd=project, timeout=NETWORK_TIMEOUT_SEC)
     except GitError:
         # The pull never produced an exit code (timeout / git vanished). Put the
         # tree back before surfacing the error; a best-effort pop, because failing

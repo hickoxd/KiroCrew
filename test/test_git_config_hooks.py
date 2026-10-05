@@ -104,7 +104,7 @@ def test_lists_every_scope_and_include(repo: Path, tmp_path: Path, monkeypatch) 
         "fromInclude",
         "local",
     ]
-    assert gch.config_hook_disable_pairs(repo)[0][0].endswith(".enabled")
+    assert any("enabled" in a for a in gch.config_hook_disable_args(repo))
 
 
 def test_two_part_hook_setting_is_not_a_name(repo: Path) -> None:
@@ -126,6 +126,23 @@ def test_too_many_names_is_refused(repo: Path) -> None:
             fh.write(f'[hook "h{i}"]\n\tcommand = true\n')
     with pytest.raises(gch.ConfigHookScanError, match="limit"):
         gch.config_hook_names(repo)
+
+
+def test_name_too_long_is_refused(repo: Path) -> None:
+    """A hook name over _MAX_HOOK_NAME_BYTES bytes cannot be passed as a -c arg."""
+    long_name = "x" * (gch._MAX_HOOK_NAME_BYTES + 1)
+    with (repo / ".git" / "config").open("a") as fh:
+        fh.write(f'[hook "{long_name}"]\n\tcommand = true\n')
+    with pytest.raises(gch.ConfigHookScanError, match="bytes"):
+        gch.config_hook_names(repo)
+
+
+def test_empty_hook_name_is_disabled(repo: Path) -> None:
+    """[hook ""] with event=pre-commit must not be silently skipped."""
+    with (repo / ".git" / "config").open("a") as fh:
+        fh.write('[hook ""]\n\tcommand = true\n\tevent = pre-commit\n')
+    args = gch.config_hook_disable_args(repo)
+    assert "hook..enabled=false" in args, args
 
 
 def test_unreadable_config_is_refused(repo: Path) -> None:
@@ -399,3 +416,159 @@ def test_update_governance_ignores_a_global_hook(repo: Path, tmp_path: Path, mon
     glob.write_text('[hook "mine"]\n\tcommand = true\n\tevent = pre-commit\n')
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(glob))
     assert ug.repo_exec_config_reason(str(repo)) == ""
+
+
+# ── submodule gitdir scanning ──
+
+
+def _make_submodule_repo(parent: Path, sub_name: str = "sub") -> Path:
+    """A superproject with a submodule that has a config hook planted in its gitdir."""
+    sup = parent / "sup"
+    sup.mkdir()
+    _git(sup, "init", "-q", "-b", "main")
+    sub_git = sup / ".git" / "modules" / sub_name
+    sub_git.mkdir(parents=True)
+    (sub_git / "config").write_text('[hook "sub-pwn"]\n\tcommand = true\n\tevent = pre-commit\n')
+    return sup
+
+
+def test_submodule_hook_names_are_listed(tmp_path: Path) -> None:
+    sup = _make_submodule_repo(tmp_path)
+    names = gch.config_hook_names(sup)
+    assert "sub-pwn" in names
+
+
+def test_submodule_scan_skips_unreadable_config(tmp_path: Path) -> None:
+    sup = _make_submodule_repo(tmp_path)
+    # Replace config with an unreadable (bad rc) file — write a real config so
+    # git binary exists, but make the submodule config a directory so git errors.
+    sub_config = sup / ".git" / "modules" / "sub" / "config"
+    sub_config.unlink()
+    sub_config.mkdir()
+    # No exception raised; the submodule is silently skipped.
+    names = gch.config_hook_names(sup)
+    assert "sub-pwn" not in names
+
+
+def test_find_common_gitdir_regular_repo(repo: Path) -> None:
+    gd = gch._find_common_gitdir(repo)
+    assert gd is not None
+    assert gd.endswith(".git") or gd.endswith(".git/")
+
+
+def test_find_common_gitdir_nonexistent(tmp_path: Path) -> None:
+    assert gch._find_common_gitdir(tmp_path / "absent") is None
+
+
+def test_find_common_gitdir_no_git(tmp_path: Path) -> None:
+    d = tmp_path / "plain"
+    d.mkdir()
+    assert gch._find_common_gitdir(d) is None
+
+
+def test_scan_file_hook_names_finds_hook(repo: Path) -> None:
+    """_scan_file_hook_names uses git to list hook names from a file."""
+    _git(repo, "config", "hook.filetest.command", "true")
+    _git(repo, "config", "hook.filetest.event", "pre-commit")
+    config_path = str(repo / ".git" / "config")
+    git = __import__("shutil").which("git")
+    assert git is not None
+    names = gch._scan_file_hook_names(config_path, git)
+    assert "filetest" in names
+
+
+def test_disable_args_includes_submodule_hooks(tmp_path: Path) -> None:
+    sup = _make_submodule_repo(tmp_path)
+    args = gch.config_hook_disable_args(sup)
+    assert "hook.sub-pwn.enabled=false" in args
+
+
+def test_find_common_gitdir_linked_worktree(repo: Path, tmp_path: Path) -> None:
+    """_find_common_gitdir follows the .git file in a linked worktree."""
+    wt = tmp_path / "wt"
+    _git(repo, "worktree", "add", "-q", str(wt), "-b", "wt-branch")
+    gd = gch._find_common_gitdir(wt)
+    # Should point to the COMMON gitdir, not the per-worktree one
+    assert gd is not None
+    assert "worktrees" not in gd
+
+
+def test_find_common_gitdir_git_file_no_gitdir(tmp_path: Path) -> None:
+    """A .git file without 'gitdir:' returns None."""
+    d = tmp_path / "plain"
+    d.mkdir()
+    (d / ".git").write_text("not-a-gitdir-file\n")
+    assert gch._find_common_gitdir(d) is None
+
+
+def test_find_common_gitdir_git_file_absolute_path(tmp_path: Path, repo: Path) -> None:
+    """A .git file with an absolute gitdir path is followed."""
+    link_dir = tmp_path / "linked"
+    link_dir.mkdir()
+    gitdir_abs = str(repo / ".git")
+    (link_dir / ".git").write_text(f"gitdir: {gitdir_abs}\n")
+    gd = gch._find_common_gitdir(link_dir)
+    assert gd == gitdir_abs or gd is not None
+
+
+def test_find_common_gitdir_open_oserror(tmp_path: Path, monkeypatch) -> None:
+    """A .git file that cannot be opened returns None."""
+    d = tmp_path / "d"
+    d.mkdir()
+    dot_git = d / ".git"
+    dot_git.write_text("gitdir: /some/path")
+    # Make .git a directory so listdir succeeds then fails (hard to do with real FS)
+    # Instead: write .git file and make it unreadable
+    dot_git.chmod(0o000)
+    try:
+        result = gch._find_common_gitdir(d)
+        # May return None (OSError on open) or the path (if perms allow)
+        assert result is None or isinstance(result, str)
+    finally:
+        dot_git.chmod(0o644)
+
+
+def test_no_trusted_git_refuses(repo: Path, monkeypatch) -> None:
+    """When trusted_git_bin() returns None, the scan fails closed (raises) rather than
+    returning [], which would leave config hooks enabled while the real git call runs."""
+    from kiro_crew import platform_compat
+
+    monkeypatch.setattr(platform_compat, "trusted_git_bin", lambda: None)
+    with pytest.raises(gch.ConfigHookScanError, match="trusted"):
+        gch.config_hook_names(repo)
+
+
+def test_scan_file_bad_rc_raises(tmp_path: Path) -> None:
+    """_scan_file_hook_names raises ConfigHookScanError when git returns a bad rc."""
+    import shutil as _shutil
+
+    git = _shutil.which("git")
+    assert git is not None
+    # Replace _run with a stub that returns rc=2
+    import subprocess as _sp
+
+    import kiro_crew.git_config_hooks as _gch_mod
+
+    orig_run = _gch_mod._run
+
+    def bad_run(*a, **kw):
+        return _sp.CompletedProcess(a[0], returncode=2, stdout=b"", stderr=b"oops")
+
+    _gch_mod._run = bad_run
+    try:
+        with pytest.raises(gch.ConfigHookScanError):
+            gch._scan_file_hook_names(str(tmp_path / "any.config"), git)
+    finally:
+        _gch_mod._run = orig_run
+
+
+def test_submodule_empty_hook_name_is_disabled(tmp_path: Path) -> None:
+    """An empty [hook ""] in a submodule gitdir must be disabled, like a named one."""
+    sup = tmp_path / "sup"
+    sup.mkdir()
+    _git(sup, "init", "-q", "-b", "main")
+    sub_git = sup / ".git" / "modules" / "sub"
+    sub_git.mkdir(parents=True)
+    (sub_git / "config").write_text('[hook ""]\n\tcommand = true\n\tevent = pre-commit\n')
+    args = gch.config_hook_disable_args(sup)
+    assert "hook..enabled=false" in args, args

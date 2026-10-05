@@ -2435,6 +2435,9 @@ def _assert_git_neutralizers(env):
         "gpg.ssh.program": "true",
         "gpg.x509.program": "true",
         "log.showSignature": "false",
+        "diff.ignoreSubmodules": "dirty",
+        "fetch.recurseSubmodules": "no",
+        "submodule.recurse": "false",
     }
 
 
@@ -3522,7 +3525,7 @@ def test_git_env_neutralizers_present():
     # GIT_NO_REPLACE_OBJECTS and GIT_OPTIONAL_LOCKS are env vars in their own
     # right, NOT config pairs, so the count must not have grown to cover them.
     assert n["GIT_OPTIONAL_LOCKS"] == "0"
-    assert n["GIT_CONFIG_COUNT"] == "9"
+    assert n["GIT_CONFIG_COUNT"] == "12"
     assert n["GIT_CONFIG_KEY_0"] == "core.fsmonitor"
     assert n["GIT_CONFIG_VALUE_0"] == "false"
     assert n["GIT_CONFIG_KEY_1"] == "core.hooksPath"

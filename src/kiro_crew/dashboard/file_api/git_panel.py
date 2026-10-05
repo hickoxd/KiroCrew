@@ -368,6 +368,11 @@ async def api_project_git_status(request: web.Request) -> web.Response:
             # panel can open them.
             "-c",
             "core.quotePath=false",
+            # A git status spawns a subprocess inside each submodule it checks,
+            # which reads the submodule's own config. `diff.ignoreSubmodules=dirty`
+            # prevents that subprocess from running (compares commit SHAs only).
+            "-c",
+            "diff.ignoreSubmodules=dirty",
         ]
         _env = {
             **os.environ,

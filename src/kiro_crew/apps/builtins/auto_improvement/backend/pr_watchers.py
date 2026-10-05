@@ -63,7 +63,7 @@ from typing import Any, Callable
 from kiro_crew.platform.context import redact_via_context
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
-from ..spine.git_safety import GIT_SAFE_CONFIG, hook_off_args, require_pinned
+from ..spine.git_safety import GIT_SAFE_CONFIG, GitSafetyError, hook_off_args, require_pinned
 from . import pr_checks, store
 
 logger = logging.getLogger(__name__)
@@ -1089,7 +1089,22 @@ class PRWatcherRegistry:
             # The turn had shell access in this tree. Re-assert the invariant before
             # trusting anything it produced, and flag a breach loudly.
             if clone and self._isolate_clone:
-                isolated = self._verify_isolation(st, clone)
+                try:
+                    isolated = self._verify_isolation(st, clone)
+                except GitSafetyError as exc:
+                    # A post-turn git safety pin could not be established (the agent
+                    # planted a config this helper refuses to run git over — an unsafe
+                    # attributes pin, or a `hook.*` config the disable scan rejects). We
+                    # can neither verify isolation nor probe durability. Retain the clone
+                    # directly — it may hold the only copy of this pass's commits — and
+                    # stop trusting this watcher. Do NOT run git again. Raised by GPT review.
+                    self._log(
+                        st,
+                        "error",
+                        f"post-turn git safety pin failed: {exc} — retaining the clone",
+                    )
+                    st.unexported_work = True
+                    isolated = False
         if not isolated:
             return False
         if not getattr(result, "ok", False):
@@ -1156,6 +1171,12 @@ class PRWatcherRegistry:
         except (OSError, subprocess.SubprocessError) as exc:
             self._log(st, "error", f"could not export the fix patch: {exc}")
             return False
+        except GitSafetyError as exc:
+            # A host-side git safety pin (attributes pin, or the config-hook disable
+            # scan) could not be established, so no git ran. That is "cannot tell",
+            # NOT "no work" — deleting the clone would lose an unexported pass. Keep it.
+            self._log(st, "error", f"could not export the fix patch (git safety): {exc}")
+            return False
         # `_export_fix` swallows its own errors, so presence of the artifact is the strongest
         # signal: if the patch is on disk the work IS saved.
         try:
@@ -1202,6 +1223,10 @@ class PRWatcherRegistry:
                 return False
             return (status.stdout or "").strip() == ""
         except (OSError, subprocess.SubprocessError):
+            return False
+        except GitSafetyError:
+            # Same reasoning: a safety-pin failure means git never ran, so the pass's
+            # durability cannot be confirmed. Keep the clone rather than lose the work.
             return False
 
     def _export_fix(self, st: WatcherState, clone: str, attempt: int) -> None:

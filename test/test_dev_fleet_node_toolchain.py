@@ -87,9 +87,9 @@ def test_the_two_environments_actually_differ(node_dir):
 
 def test_credential_helpers_are_still_withheld_from_the_build_tier(node_dir):
     """The PATH change must not have disturbed the pre-existing helper split."""
-    with patch.object(runtime, "_GIT_TRUSTED_HELPERS", {"GIT_CONFIG_KEY_9": "credential.helper"}):
-        assert "GIT_CONFIG_KEY_9" not in runtime._build_env()
-        assert "GIT_CONFIG_KEY_9" in runtime._build_env(with_credentials=True)
+    with patch.object(runtime, "_GIT_TRUSTED_HELPERS", {"GIT_CONFIG_KEY_12": "credential.helper"}):
+        assert "GIT_CONFIG_KEY_12" not in runtime._build_env()
+        assert "GIT_CONFIG_KEY_12" in runtime._build_env(with_credentials=True)
 
 
 def test_build_path_still_contains_the_trusted_dirs(node_dir):
