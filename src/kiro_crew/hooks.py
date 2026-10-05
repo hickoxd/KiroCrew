@@ -193,6 +193,7 @@ from kiro_crew.platform.tool_paths import (  # noqa: F401  (re-exported for call
     target_paths,
 )
 from kiro_crew.security import (  # noqa: F401 - the path owners read these
+    MAX_SCANNABLE_COMMAND_CHARS,
     audit_bash_exfiltration,
     is_sensitive_bash_command,
     is_sensitive_path,
@@ -1300,6 +1301,33 @@ class HookManager:
         governance_mcp_ref = mcp_identity_ref(mcp_server_name, mcp_tool_name)
         if command:
             deny_targets.append(command)
+        elif not mcp_server_name and isinstance(raw_params, dict):
+            # A harness may stream its shell tool under a kind other than
+            # ``execute`` (the DeepSeek harness sends ``bash`` as ``other``), so no
+            # shell command is recovered and the floor would see only the title.
+            # The tool's own ``command``/``cmd`` argument is added here as a DENY
+            # target only: allow paths and shell exemptions still key on
+            # ``is_shell``/``command``, so this can refuse a call but never grant
+            # one. A call that names its MCP server is left out: its
+            # ``command``-named arguments are not shell text, and it is governed
+            # by ``@server/tool`` rules. A harness that names no server for its
+            # MCP calls (claude-agent-acp, opencode, dsh, pi) cannot be told
+            # apart here, so such a call's ``command`` argument is checked too.
+            # A value over the scan ceiling is refused unscanned, exactly as a
+            # recovered shell command is by ``is_sensitive_bash_command``: the
+            # deny catalog has no length cap of its own, and the gate is on the
+            # event loop's path.
+            for _key in ("command", "cmd"):
+                _raw_command = raw_params.get(_key)
+                if not isinstance(_raw_command, str) or not _raw_command:
+                    continue
+                if len(_raw_command) > MAX_SCANNABLE_COMMAND_CHARS:
+                    return ToolHookResult.deny(
+                        is_sensitive_bash_command(_raw_command)
+                        or "Blocked: input is too large to security-scan"
+                    )
+                if _raw_command not in deny_targets:
+                    deny_targets.append(_raw_command)
         for target in deny_targets:
             reason = authority.is_denied(
                 target,
