@@ -3490,6 +3490,266 @@ class TestClientSession:
         assert created["n"] == 1
 
 
+class TestConfigurableApiBase:
+    """TELEGRAM_API_BASE_URL overrides the Bot API host for proxy setups.
+
+    Unset keeps today's public host; set routes method calls and file
+    downloads through the configured origin. The value is read at call time
+    and validated (https-only, except loopback) because it carries the token.
+    """
+
+    # ── Call-time read: the var takes effect without a module reload ──
+
+    def test_api_base_read_at_call_time_after_env_change(self, monkeypatch: Any) -> None:
+        import kiro_crew.telegram.client as client_mod
+
+        # The module is already imported with the var unset. Setting it now
+        # (as load_credentials does, AFTER import) must change the result,
+        # proving the value is read on each call rather than frozen at import.
+        monkeypatch.delenv("TELEGRAM_API_BASE_URL", raising=False)
+        assert client_mod._api_base() == "https://api.telegram.org/bot{token}/{method}"
+
+        monkeypatch.setenv(
+            "TELEGRAM_API_BASE_URL",
+            "https://tg-proxy.example.com/bot{token}/{method}",
+        )
+        assert client_mod._api_base() == "https://tg-proxy.example.com/bot{token}/{method}"
+
+    def test_unset_keeps_public_host(self, monkeypatch: Any) -> None:
+        import kiro_crew.telegram.client as client_mod
+
+        monkeypatch.delenv("TELEGRAM_API_BASE_URL", raising=False)
+        assert client_mod._api_base() == "https://api.telegram.org/bot{token}/{method}"
+        assert client_mod._file_base() == "https://api.telegram.org"
+
+    # ── Scheme validation: https accepted, http refused unless loopback ──
+
+    def test_https_proxy_accepted(self, monkeypatch: Any) -> None:
+        import kiro_crew.telegram.client as client_mod
+
+        monkeypatch.setenv(
+            "TELEGRAM_API_BASE_URL",
+            "https://tg-proxy.example.com/bot{token}/{method}",
+        )
+        assert client_mod._api_base() == "https://tg-proxy.example.com/bot{token}/{method}"
+
+    def test_http_non_loopback_refused_falls_back_to_public(self, monkeypatch: Any) -> None:
+        import kiro_crew.telegram.client as client_mod
+
+        # Plaintext http to a remote host would send the bot token in clear
+        # text — refused, falls back to the public https host.
+        monkeypatch.setenv(
+            "TELEGRAM_API_BASE_URL",
+            "http://tg-proxy.example.com/bot{token}/{method}",
+        )
+        assert client_mod._api_base() == "https://api.telegram.org/bot{token}/{method}"
+
+    def test_http_loopback_accepted(self, monkeypatch: Any) -> None:
+        import kiro_crew.telegram.client as client_mod
+
+        # http is allowed only for loopback, where the token never leaves the
+        # machine (a local dev proxy on 127.0.0.1 / ::1 / localhost).
+        for host in (
+            "http://127.0.0.1:8080/bot{token}/{method}",
+            "http://localhost/bot{token}/{method}",
+            "http://[::1]:9000/bot{token}/{method}",
+        ):
+            monkeypatch.setenv("TELEGRAM_API_BASE_URL", host)
+            assert client_mod._api_base() == host
+
+    def test_missing_placeholder_refused(self, monkeypatch: Any) -> None:
+        import kiro_crew.telegram.client as client_mod
+
+        # A value lacking {token}/{method} formats to the same URL for every
+        # method — refused, falls back to the public host.
+        monkeypatch.setenv("TELEGRAM_API_BASE_URL", "https://proxy.example.com")
+        assert client_mod._api_base() == "https://api.telegram.org/bot{token}/{method}"
+
+    def test_unparseable_falls_back_to_public(self, monkeypatch: Any) -> None:
+        import kiro_crew.telegram.client as client_mod
+
+        monkeypatch.setenv("TELEGRAM_API_BASE_URL", "not-a-url")
+        assert client_mod._api_base() == "https://api.telegram.org/bot{token}/{method}"
+        assert client_mod._file_base() == "https://api.telegram.org"
+
+    # ── File base keeps the template's path prefix ──
+
+    def test_file_base_defaults_to_public_host(self, monkeypatch: Any) -> None:
+        import kiro_crew.telegram.client as client_mod
+
+        monkeypatch.delenv("TELEGRAM_API_BASE_URL", raising=False)
+        assert client_mod._file_base() == "https://api.telegram.org"
+
+    def test_file_base_derives_proxy_origin(self, monkeypatch: Any) -> None:
+        import kiro_crew.telegram.client as client_mod
+
+        # A root-mounted proxy template yields that proxy's origin.
+        monkeypatch.setenv(
+            "TELEGRAM_API_BASE_URL",
+            "https://tg-proxy.example.com/bot{token}/{method}",
+        )
+        assert client_mod._file_base() == "https://tg-proxy.example.com"
+
+    def test_file_base_keeps_path_prefix(self, monkeypatch: Any) -> None:
+        import kiro_crew.telegram.client as client_mod
+
+        # A path-prefixed template must keep its prefix so downloads stay
+        # inside the proxied route (…/tg/file/bot…), not fall out to …/file/bot.
+        monkeypatch.setenv(
+            "TELEGRAM_API_BASE_URL",
+            "https://proxy.example.com/tg/bot{token}/{method}",
+        )
+        assert client_mod._file_base() == "https://proxy.example.com/tg"
+        # The full download URL built in download_file keeps the prefix.
+        url = f"{client_mod._file_base()}/file/bot<TOKEN>/photos/f.jpg"
+        assert url == "https://proxy.example.com/tg/file/bot<TOKEN>/photos/f.jpg"
+
+
+class TestLoopbackProxyBypass:
+    """A loopback destination must bypass a configured forward proxy.
+
+    The bot token travels in the request URL; sending a loopback http:// call
+    through a remote HTTPS_PROXY would leak the token off-box in plaintext,
+    defeating the loopback-http allowance.
+    """
+
+    def test_url_is_loopback_detects_loopback_hosts(self) -> None:
+        from kiro_crew.telegram.client import _url_is_loopback
+
+        assert _url_is_loopback("http://127.0.0.1:8080/botT/getMe")
+        assert _url_is_loopback("http://localhost/botT/getMe")
+        assert _url_is_loopback("http://[::1]:9000/botT/getMe")
+        assert not _url_is_loopback("https://proxy.example.com/botT/getMe")
+        assert not _url_is_loopback("https://api.telegram.org/botT/getMe")
+
+    def test_proxy_bypassed_for_loopback_destination(self) -> None:
+        from kiro_crew.telegram.client import TelegramClient
+
+        client = TelegramClient(token="T", proxy="http://corp-proxy.example.com:3128")
+        # A loopback request must not go through the remote proxy.
+        assert client._proxy_for("http://127.0.0.1:8081/botT/getMe") is None
+        assert client._proxy_for("http://localhost/botT/getMe") is None
+
+    def test_proxy_kept_for_remote_destination(self) -> None:
+        from kiro_crew.telegram.client import TelegramClient
+
+        proxy = "http://corp-proxy.example.com:3128"
+        client = TelegramClient(token="T", proxy=proxy)
+        # A non-loopback request still uses the configured proxy.
+        assert client._proxy_for("https://api.telegram.org/botT/getMe") == proxy
+        assert client._proxy_for("https://proxy.example.com/botT/getMe") == proxy
+
+
+class TestTelegramSettingsSharedBase:
+    """The dashboard token-verify URL uses the client's shared resolver."""
+
+    def test_validate_url_uses_shared_resolver_at_call_time(self, monkeypatch: Any) -> None:
+        import asyncio
+
+        import kiro_crew.dashboard.messaging_api.telegram_settings as settings_mod
+
+        captured: dict[str, str] = {}
+
+        class _FakeResp:
+            async def json(self, content_type: Any = None) -> dict[str, Any]:
+                return {"ok": True}
+
+            async def __aenter__(self) -> "_FakeResp":
+                return self
+
+            async def __aexit__(self, *a: Any) -> None:
+                return None
+
+        class _FakeSession:
+            def __init__(self, *a: Any, **k: Any) -> None:
+                pass
+
+            def get(self, url: str, **kwargs: Any) -> _FakeResp:
+                captured["url"] = url
+                captured["allow_redirects"] = kwargs.get("allow_redirects")
+                return _FakeResp()
+
+            async def __aenter__(self) -> "_FakeSession":
+                return self
+
+            async def __aexit__(self, *a: Any) -> None:
+                return None
+
+        import aiohttp
+
+        monkeypatch.setattr(aiohttp, "ClientSession", _FakeSession)
+        monkeypatch.setattr(settings_mod, "_TOKEN_VERIFY_TIMEOUT", 1, raising=False)
+        # Set the proxy var AFTER import — the dashboard must still pick it up,
+        # proving it reads the same call-time resolver the client uses.
+        monkeypatch.setenv(
+            "TELEGRAM_API_BASE_URL",
+            "https://tg-proxy.example.com/bot{token}/{method}",
+        )
+
+        asyncio.run(settings_mod._validate_telegram_token("123:ABC"))
+        assert captured["url"] == "https://tg-proxy.example.com/bot123:ABC/getMe"
+        # The verify URL carries the token, so a proxy redirect must not be
+        # followed off-box.
+        assert captured["allow_redirects"] is False
+
+
+class TestRedirectsRefusedOnTokenPath:
+    """Token-bearing requests must not follow a proxy redirect (plaintext leak).
+
+    A TLS-terminating proxy can answer a Bot API call with a 302 to a plain
+    http:// Location; following it would send the token off-box in clear text.
+    """
+
+    def _drive(self, monkeypatch: Any, call: str) -> dict[str, Any]:
+        import asyncio
+
+        import kiro_crew.telegram.client as client_mod
+
+        captured: dict[str, Any] = {}
+
+        class _FakeResp:
+            status = 200
+
+            async def json(self, content_type: Any = None) -> dict[str, Any]:
+                return {"ok": True, "result": {}}
+
+            async def __aenter__(self) -> "_FakeResp":
+                return self
+
+            async def __aexit__(self, *a: Any) -> None:
+                return None
+
+        class _FakeSession:
+            def post(self, url: str, **kwargs: Any) -> _FakeResp:
+                captured["url"] = url
+                captured["allow_redirects"] = kwargs.get("allow_redirects")
+                return _FakeResp()
+
+        cli = client_mod.TelegramClient(token="123:ABC")
+
+        async def _fake_ensure() -> _FakeSession:
+            return _FakeSession()
+
+        monkeypatch.setattr(cli, "_ensure_session", _fake_ensure)
+
+        async def _run() -> None:
+            if call == "call_raw":
+                await cli._call_raw("getMe", {})
+            else:
+                await cli._api_request("getMe", lambda: {"json": {}})
+
+        asyncio.run(_run())
+        return captured
+
+    def test_call_raw_refuses_redirects(self, monkeypatch: Any) -> None:
+        captured = self._drive(monkeypatch, "call_raw")
+        assert captured["allow_redirects"] is False
+
+    def test_api_request_refuses_redirects(self, monkeypatch: Any) -> None:
+        captured = self._drive(monkeypatch, "api_request")
+        assert captured["allow_redirects"] is False
+
+
 class TestTelegramTokenRedaction:
     """#1 — a Telegram bot token echoed in output must be scrubbed."""
 

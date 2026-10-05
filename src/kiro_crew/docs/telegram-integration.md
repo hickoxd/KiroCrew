@@ -221,12 +221,21 @@ out of `config.json`.
 **Behind a network that blocks `api.telegram.org`?** Set `TELEGRAM_API_BASE_URL`
 to a reverse proxy that forwards to the Bot API. It is a full method template
 containing `{token}` and `{method}`, e.g.
-`https://your-proxy.example.com/bot{token}/{method}`. When set, it is used for
-all Bot API method calls, the dashboard's token verification (`getMe`), and
-file/photo downloads (whose origin is derived from it). When unset, everything
-uses the public `https://api.telegram.org` host exactly as before. This is
-distinct from `HTTPS_PROXY`: use `HTTPS_PROXY` for an ordinary forward proxy, and
-`TELEGRAM_API_BASE_URL` when the API host itself must be swapped for a
+`https://your-proxy.example.com/bot{token}/{method}`. A path prefix is kept, so
+`https://your-proxy.example.com/tg/bot{token}/{method}` sends both method calls
+and file/photo downloads under `/tg`. When set, it is used for all Bot API
+method calls, the dashboard's token verification (`getMe`), and file/photo
+downloads (whose origin and path prefix are derived from it). When unset,
+everything uses the public `https://api.telegram.org` host exactly as before.
+
+Because the URL carries your bot token, the scheme must be `https`. A plaintext
+`http://` value is accepted **only for a loopback host** (`127.0.0.1`, `::1`,
+`localhost`), where the token never leaves the machine — useful for a local dev
+proxy. Any other `http://` value, or a template missing `{token}`/`{method}`, is
+ignored with a warning and the public host is used instead.
+
+This is distinct from `HTTPS_PROXY`: use `HTTPS_PROXY` for an ordinary forward
+proxy, and `TELEGRAM_API_BASE_URL` when the API host itself must be swapped for a
 reverse-proxy origin.
 
 **If something's off:** no reply usually means your ID isn't allowed or

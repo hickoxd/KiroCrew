@@ -23,6 +23,7 @@ import logging
 import os
 import re
 import time
+import urllib.parse
 from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -198,23 +199,94 @@ TELEGRAM_CHUNK_LIMIT = 4000
 #: table-bearing segments are budgeted against this cap, not the render cap.
 TELEGRAM_RICH_MAX_CHARS = 32768
 
-# Bot API base URL. Override with TELEGRAM_API_BASE_URL for proxy/reverse-proxy
-# setups (e.g. a network that blocks api.telegram.org). Must be a full method
-# template containing {token} and {method}; unset falls back to the public host.
-_API_BASE = os.environ.get(
-    "TELEGRAM_API_BASE_URL",
-    "https://api.telegram.org/bot{token}/{method}",
-)
+# Default Bot API method template: the public host when no proxy is set.
+_DEFAULT_API_BASE = "https://api.telegram.org/bot{token}/{method}"
+
+#: Hosts for which a plaintext ``http://`` scheme is accepted. Everywhere else
+#: the bot token would travel in clear text to a remote host, so only ``https``
+#: is allowed; loopback never leaves the machine.
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "[::1]", "localhost"})
+
+
+def _is_loopback_host(host: str) -> bool:
+    """True when *host* (netloc without port) is a loopback address."""
+    bare = host.rsplit(":", 1)[0] if host.rsplit(":", 1)[-1].isdigit() else host
+    return bare.lower() in _LOOPBACK_HOSTS
+
+
+def _url_is_loopback(url: str) -> bool:
+    """True when *url*'s host is a loopback address.
+
+    Lets the client bypass a configured forward proxy for a loopback
+    destination: a loopback request must stay on the machine, so routing it
+    through a remote ``HTTPS_PROXY``/``HTTP_PROXY`` would send the token-bearing
+    URL off-box in plaintext — exactly what the loopback-``http`` allowance is
+    meant to avoid.
+    """
+    try:
+        return _is_loopback_host(urllib.parse.urlparse(url).netloc)
+    except ValueError:
+        return False
+
+
+def _api_base() -> str:
+    """The Bot API method template, read at call time (not import).
+
+    Override with ``TELEGRAM_API_BASE_URL`` for proxy/reverse-proxy setups
+    (e.g. a network that blocks api.telegram.org). Must be a full method
+    template containing ``{token}`` and ``{method}``.
+
+    Reading on every call (rather than freezing at import) is deliberate: the
+    gateway loads ``~/.kiro/crew/.env`` into ``os.environ`` *after* this module
+    is imported, so an override placed there only takes effect if read later.
+
+    The value is validated because it carries the bot token: the scheme must be
+    ``https``, except for a loopback host (``127.0.0.1``/``::1``/``localhost``),
+    where plaintext never leaves the machine. A missing ``{token}``/``{method}``
+    placeholder, an unparseable value, or a non-loopback ``http`` URL is refused
+    with a warning and the public default is used instead, so a misconfigured
+    var fails safe to the public host rather than leaking the token.
+    """
+    raw = os.environ.get("TELEGRAM_API_BASE_URL")
+    if not raw:
+        return _DEFAULT_API_BASE
+    try:
+        parsed = urllib.parse.urlparse(raw)
+    except ValueError:
+        parsed = None
+    reason = ""
+    if parsed is None or parsed.scheme not in ("http", "https") or not parsed.netloc:
+        reason = "not an http(s) URL"
+    elif parsed.scheme == "http" and not _is_loopback_host(parsed.netloc):
+        reason = "plaintext http is only allowed for loopback hosts"
+    elif "{token}" not in raw or "{method}" not in raw:
+        reason = "missing {token}/{method} placeholder"
+    if reason:
+        logger.warning(
+            "Ignoring TELEGRAM_API_BASE_URL (%s); using the public Bot API host.",
+            reason,
+        )
+        return _DEFAULT_API_BASE
+    return raw
 
 
 def _file_base() -> str:
-    """Origin (scheme + host) for Telegram file downloads.
+    """Origin + path prefix for Telegram file downloads.
 
-    Derived from ``_API_BASE`` so that a configured proxy also serves
-    ``/file/bot<token>/<path>`` downloads; falls back to the public host when
-    ``TELEGRAM_API_BASE_URL`` is unset or unparseable.
+    Derived from :func:`_api_base` so a configured proxy also serves
+    ``/file/bot<token>/<path>`` downloads. Everything up to the trailing
+    ``bot{token}/{method}`` is kept, so a path-prefixed template such as
+    ``https://proxy.example.com/tg/bot{token}/{method}`` yields the download
+    base ``https://proxy.example.com/tg`` and the file URL stays inside the
+    proxied route. Falls back to the public host when the template is unset or
+    unparseable.
     """
-    m = re.match(r"^(https?://[^/]+)", _API_BASE)
+    base = _api_base()
+    # Strip the method-template tail so any path prefix before it survives.
+    prefix = re.sub(r"bot\{token\}/\{method\}$", "", base).rstrip("/")
+    if re.match(r"^https?://[^/]+", prefix):
+        return prefix
+    m = re.match(r"^(https?://[^/]+)", base)
     return m.group(1) if m else "https://api.telegram.org"
 
 
@@ -1218,10 +1290,24 @@ class TelegramClient:
             if isinstance(entry, dict) and isinstance(entry.get("message_id"), int)
         ]
 
+    def _proxy_for(self, url: str) -> str | None:
+        """The forward proxy to use for *url*, or ``None`` to bypass it.
+
+        A loopback destination must never traverse a remote forward proxy: the
+        request URL carries the bot token, so routing a ``http://127.0.0.1``
+        call through ``HTTPS_PROXY`` would leak the token off-box in plaintext.
+        For every non-loopback host the configured proxy is used unchanged.
+        """
+        if _url_is_loopback(url):
+            return None
+        return self._proxy
+
     # ── File download (attachment ingestion) ──
 
-    #: The only host Telegram file downloads may resolve to. A redirect or
-    #: different host means the URL is not from Telegram and must be refused.
+    #: The default host Telegram file downloads resolve to. When
+    #: ``TELEGRAM_API_BASE_URL`` configures a proxy, downloads instead go to
+    #: that proxy's origin (and path prefix), derived by :func:`_file_base`.
+    #: A redirect to any other host is still refused.
     _FILE_HOST = "api.telegram.org"
 
     async def download_file(self, file_id: str, dest: str) -> None:
@@ -1229,13 +1315,14 @@ class TelegramClient:
 
         Two-step process per Bot API docs:
         1. ``getFile(file_id)`` → returns a ``File`` object with ``file_path``
-        2. Construct ``https://api.telegram.org/file/bot<token>/<file_path>``
-           and download the bytes.
+        2. Construct ``<file_base>/file/bot<token>/<file_path>`` and download
+           the bytes, where ``<file_base>`` is the public host by default or a
+           configured proxy origin (with any path prefix) via :func:`_file_base`.
 
-        Host-allowlisted: only ``api.telegram.org`` is accepted. Redirects are
-        refused so a compromised file_path cannot exfiltrate data via an open
-        redirect. Errors raise token-free messages (the download URL contains
-        the bot token, so aiohttp's default exception str() must never propagate).
+        Redirects are refused so a compromised file_path cannot exfiltrate data
+        via an open redirect. Errors raise token-free messages (the download URL
+        contains the bot token, so aiohttp's default exception str() must never
+        propagate).
         """
         result = await self._api("getFile", {"file_id": file_id})
         if not result or not isinstance(result, dict):
@@ -1250,7 +1337,7 @@ class TelegramClient:
         try:
             async with session.get(
                 url,
-                proxy=self._proxy,
+                proxy=self._proxy_for(url),
                 timeout=aiohttp.ClientTimeout(total=60),
                 allow_redirects=False,
             ) as resp:
@@ -1297,12 +1384,17 @@ class TelegramClient:
         "Telegram said no" from "network down".
         """
         session = await self._ensure_session()
-        url = _API_BASE.format(token=self._token, method=method)
+        url = _api_base().format(token=self._token, method=method)
         async with session.post(
             url,
             json=params,
-            proxy=self._proxy,
+            proxy=self._proxy_for(url),
             timeout=aiohttp.ClientTimeout(total=timeout),
+            # The URL carries the bot token. A TLS-terminating proxy can answer
+            # with a redirect to a plaintext http:// Location; following it would
+            # send the token off-box in clear text. Refuse redirects outright,
+            # as download_file already does.
+            allow_redirects=False,
         ) as resp:
             return await resp.json(content_type=None)
 
@@ -1972,7 +2064,7 @@ class TelegramClient:
         """
         session = await self._ensure_session()
 
-        url = _API_BASE.format(token=self._token, method=method)
+        url = _api_base().format(token=self._token, method=method)
         # ONE timer for the whole call, not per attempt: the caller is blocked
         # for the entire span including a 429 ``retry_after`` sleep, and that
         # multi-second stall is exactly the user-visible latency the metric
@@ -1987,8 +2079,11 @@ class TelegramClient:
             try:
                 async with session.post(
                     url,
-                    proxy=self._proxy,
+                    proxy=self._proxy_for(url),
                     timeout=aiohttp.ClientTimeout(total=timeout),
+                    # The URL carries the bot token; refuse a proxy redirect to a
+                    # plaintext http:// Location rather than follow it off-box.
+                    allow_redirects=False,
                     **body(),
                 ) as resp:
                     data = await resp.json(content_type=None)

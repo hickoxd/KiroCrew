@@ -49,17 +49,20 @@ async def _validate_telegram_token(token: str) -> str | None:
     """
     import aiohttp  # noqa: F811
 
+    from kiro_crew.telegram.client import _api_base
+
     timeout = aiohttp.ClientTimeout(total=_TOKEN_VERIFY_TIMEOUT)
-    # Built from the same TELEGRAM_API_BASE_URL override the client uses, so a
-    # proxied install verifies its token through the proxy too; unset falls back
-    # to the public host.
-    _tg_base = os.environ.get(
-        "TELEGRAM_API_BASE_URL",
-        "https://api.telegram.org/bot{token}/{method}",
-    )
-    verify_url = _tg_base.format(token=token, method="getMe")
+    # Built from the SAME TELEGRAM_API_BASE_URL resolver the client uses
+    # (``_api_base`` — read at call time, scheme-validated), so a proxied
+    # install verifies its token through the proxy too and the dashboard can
+    # never target a different host than the live channel; unset falls back to
+    # the public host.
+    verify_url = _api_base().format(token=token, method="getMe")
     async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.get(verify_url) as resp:
+        # verify_url carries the bot token; refuse a proxy redirect to a
+        # plaintext http:// Location rather than follow it off-box, matching the
+        # client's own method calls.
+        async with session.get(verify_url, allow_redirects=False) as resp:
             data = await resp.json(content_type=None)
             if isinstance(data, dict) and data.get("ok"):
                 return None
