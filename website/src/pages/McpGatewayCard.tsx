@@ -9,7 +9,10 @@ import { i18nT } from '../i18n/t'
 // dashboard served from a build newer than the gateway it talks to reads the
 // field the gateway does not send yet, and `undefined` in arithmetic renders NaN
 // across the card. Absent reads as zero for one release.
-type Backend = { server: string; agent: string; pid: number | null; stubs?: number; idle_s: number; rss_kb: number }
+// `agents` is a LIST because the agent is not a pool dimension: agents whose
+// server config matches share one backend, so a row legitimately names several.
+// Empty while a backend is warm but unattached.
+type Backend = { server: string; agents?: string[]; pid: number | null; stubs?: number; idle_s: number; rss_kb: number }
 type Metrics = {
   running: boolean; size?: number; max_backends?: number; backends: Backend[]
   // Present only when prewarming is enabled (gatewayd folds in the warm-pool
@@ -148,6 +151,7 @@ export default function McpGatewayCard() {
           <thead>
             <tr className="text-muted text-left">
               <th className="font-normal py-1 pr-3">{i18nT('pages.mcpGatewayCard.server')}</th>
+              <th className="font-normal py-1 pr-3">{i18nT('pages.channelPage.agents')}</th>
               <th className="font-normal py-1 pr-3">{i18nT('pages.mcpGatewayCard.pid')}</th>
               <th className="font-normal py-1 pr-3">{i18nT('pages.sessionsTab.mcp_stubs')}</th>
               <th className="font-normal py-1 pr-3">{i18nT('pages.mcpGatewayCard.idle')}</th>
@@ -158,6 +162,7 @@ export default function McpGatewayCard() {
             {backends.map((b, i) => (
               <tr key={backendRowKey(b, i)} className="border-t border-border">
                 <td className="py-1 pr-3">{b.server}</td>
+                <td className="py-1 pr-3">{b.agents?.length ? b.agents.join(', ') : '—'}</td>
                 <td className="py-1 pr-3">{b.pid ?? '—'}</td>
                 <td className="py-1 pr-3">{b.stubs ?? '—'}</td>
                 <td className="py-1 pr-3">{b.idle_s}{i18nT('pages.mcpGatewayCard.s')}</td>

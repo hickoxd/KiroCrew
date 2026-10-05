@@ -190,7 +190,6 @@ class TestNamingMigration:
 
         pk = PoolKey(
             server_name="test-srv",
-            agent_name="kirocrew",
             command_args_hash="abc123",
             effective_env_hash="e",
             work_dir="/tmp/w",
@@ -200,7 +199,6 @@ class TestNamingMigration:
             autoapprove_set_hash="a",
             approval_mode="interactive",
             trust_all_tools=False,
-            config_snapshot_hash="c",
         )
         env_patch = {"MC_MCP_TARGET_TEST_SRV": "/usr/bin/test-srv --stdio"}
         with patch.dict(os.environ, env_patch, clear=False):
@@ -220,7 +218,6 @@ class TestNamingMigration:
 
         pk = PoolKey(
             server_name="test-srv",
-            agent_name="kirocrew",
             command_args_hash="abc123",
             effective_env_hash="e",
             work_dir="/tmp/w",
@@ -230,7 +227,6 @@ class TestNamingMigration:
             autoapprove_set_hash="a",
             approval_mode="interactive",
             trust_all_tools=False,
-            config_snapshot_hash="c",
         )
         env_patch = {
             "KIROCREW_MCP_TARGET_TEST_SRV": "/usr/bin/new-srv --stdio",

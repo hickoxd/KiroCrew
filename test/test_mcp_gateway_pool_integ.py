@@ -114,6 +114,7 @@ async def _spawn_stub(
     home: Path,
     poolable: bool = True,
     session_key: str = "",
+    env_json: str = "",
 ) -> asyncio.subprocess.Process:
     """Launch a REAL stub process, exactly as the rewriter's overlay would.
 
@@ -124,6 +125,10 @@ async def _spawn_stub(
     ``session_key`` is what the stub puts in its Register frame, and therefore
     what gatewayd injects as the caller block. Empty means the stub registers
     without an identity -- a state gatewayd handles by forwarding ``caller=None``.
+
+    ``env_json`` is the server's declared env, which the stub folds into
+    ``effective_env_hash``. It is how a test varies a REAL pool dimension when
+    the resolver hands every key the same target.
     """
     env = {**_clean_env(), "KIROCREW_HOME": str(home)}
     if session_key:
@@ -142,6 +147,7 @@ async def _spawn_stub(
         "--socket", str(socket_path),
         "--sandbox-mode", "off",
         "--approval-mode", "auto",
+        *(["--env-json", env_json] if env_json else []),
         *(["--poolable"] if poolable else []),
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
@@ -493,20 +499,52 @@ async def test_real_stubs_sharing_a_key_share_one_backend(tmp_path: Path, short_
             f"a stub degraded to per-session exec: {fallback.read_text()}"
         )
 
-        # --- a different agent must NOT share it --------------------------
+        # --- a different agent SHARES it ----------------------------------
+        # Measured on real processes: the agent name never reaches the backend,
+        # so a second agent declaring this server identically has asked for the
+        # process that is already running.
+        # On a live host this is worth up to five duplicate backends per common
+        # server. Everything that DOES change the process -- command, env, work
+        # dir, binary -- is its own PoolKey dimension and still partitions,
+        # which the declared-env control at the end of this test measures.
         other = await _spawn_stub(
             socket_path=sock, server="fake", agent="other-agent",
             work_dir=work_dir, home=home,
         )
         procs.append(other)
         reply = await _drive_initialize(other, req_id=99)
-        assert "result" in reply, f"partition stub got no result: {reply}"
+        assert "result" in reply, f"second-agent stub got no result: {reply}"
+
+        assert _launch_count(launch_log) == 1, (
+            f"a stub under a different agent produced "
+            f"{_launch_count(launch_log)} backends total, expected 1 — the "
+            "agent is partitioning the pool again, so two agents with identical "
+            "server config each burn their own MCP server process."
+        )
+        assert not fallback.exists(), (
+            f"the second agent's stub degraded to per-session exec: "
+            f"{fallback.read_text()}"
+        )
+
+        # --- negative control: a real difference still partitions ----------
+        # Without this, the assertion above would also pass if the key had
+        # stopped partitioning at all. A declared env is the cheapest real
+        # dimension to vary here: the resolver hands every key the same target,
+        # so ``effective_env_hash`` is the only thing that can differ.
+        partitioned = await _spawn_stub(
+            socket_path=sock, server="fake", agent="probe",
+            work_dir=work_dir, home=home,
+            env_json=json.dumps({"DECLARED": "different"}),
+        )
+        procs.append(partitioned)
+        reply = await _drive_initialize(partitioned, req_id=100)
+        assert "result" in reply, f"declared-env stub got no result: {reply}"
 
         assert _launch_count(launch_log) == 2, (
-            f"a stub under a different agent produced "
-            f"{_launch_count(launch_log)} backends total, expected 2 — PoolKey "
-            "is not partitioning by agent, so two agents would share one MCP "
-            "server process and its state."
+            f"a stub declaring different env produced "
+            f"{_launch_count(launch_log)} backends total, expected 2 — the key "
+            "has stopped partitioning on execution shape, which would make the "
+            "sharing assertion above meaningless."
         )
     finally:
         await _reap(procs)

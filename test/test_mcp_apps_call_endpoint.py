@@ -54,7 +54,6 @@ def apps_flag_on(monkeypatch):
 def _pool_key(server: str = "fake-mcp-app") -> PoolKey:
     return PoolKey(
         server_name=server,
-        agent_name="test-agent",
         command_args_hash="abc123",
         effective_env_hash="def456",
         work_dir="/tmp/test",
@@ -64,18 +63,21 @@ def _pool_key(server: str = "fake-mcp-app") -> PoolKey:
         autoapprove_set_hash="ghi789",
         approval_mode="reads",
         trust_all_tools=False,
-        config_snapshot_hash="jkl012",
     )
 
 
-def _spool_record(server: str = "fake-mcp-app", pool_digest: str | None = None) -> str:
+def _spool_record(
+    server: str = "fake-mcp-app",
+    pool_digest: str | None = None,
+    session_key: str = "dashboard:sess-cb",
+) -> str:
     """Write a plausible spool record (as interception would) and return its id."""
     if pool_digest is None:
         pool_digest = _pool_key(server).stable_hash()
     return write_spool({
         "server": server,
         "tool": "draw",
-        "session_key": "dashboard:sess-cb",
+        "session_key": session_key,
         "pool_digest": pool_digest,
         "html": "<html>app</html>",
         "csp": None,
@@ -376,6 +378,121 @@ async def test_app_call_is_not_denied_when_no_policy_is_readable_here(
             "tool": "draw", "arguments": {},
         })
         assert reply["type"] == "app-result"
+    finally:
+        await live.aclose()
+
+
+def _record_session_agent(session_key: str, agent: str) -> None:
+    """Record *session_key* as running *agent*, the way a real session does.
+
+    Written into the conversation log's own metadata rather than stubbed, so the
+    test exercises the resolution ``app_call`` performs instead of a mock of it.
+    """
+    from kiro_crew.execution_context import (
+        EXECUTION_CONTEXT_KEY,
+        ExecutionContext,
+        MemoryStoreRef,
+    )
+    from kiro_crew.history import ConversationLog
+
+    execution = ExecutionContext(
+        member_id=None,
+        store=MemoryStoreRef(store_id="default"),
+        selection_kind="template",
+        template_id=agent,
+        selection_name=agent,
+    )
+    ConversationLog().update_metadata_if(
+        session_key, {EXECUTION_CONTEXT_KEY: execution.to_record()}, lambda _meta: True
+    )
+
+
+async def test_each_agents_own_profile_applies_through_one_shared_backend(
+    apps_flag_on, spool_tmp, tmp_path, monkeypatch
+):
+    """Each agent's own governance profile applies through a shared backend.
+
+    Two agents SHARE a backend, so ``backend.pool_key`` holds no single agent to
+    read. The governance input comes from the CALL's own ``session_key``, and
+    this measures that both directions hold at once, against ONE live backend
+    and ONE pool digest:
+
+    * ``gpu-dev`` carries a task-bound profile denying ``@fake-mcp-app/draw``.
+      Its call is refused.
+    * ``kirocrew`` carries no profile. The SAME tool on the SAME backend runs.
+
+    Resolving the agent from the backend instead would answer with whichever
+    agent happened to register it, so one of these two assertions would have to
+    fail -- which is why they are one test and not two.
+    """
+    import kiro_crew.platform.governance_profiles as gp
+
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
+    profiles = tmp_path / "profiles"
+    profiles.mkdir()
+    (profiles / "scoped.json").write_text(
+        json.dumps({
+            "version": 1,
+            "bind": {"type": "task", "id": "gpu-dev"},
+            "scopes": {"mcp": {"mode": "deny", "deny": ["@fake-mcp-app/draw"]}},
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(gp, "_PROFILES_DIR", profiles)
+    gp.reset_store()
+
+    _record_session_agent("dashboard:scoped", "gpu-dev")
+    _record_session_agent("dashboard:open", "kirocrew")
+
+    live = await _spawn_pooled_server()
+    try:
+        digest = live.backend.pool_key.stable_hash()
+        scoped = _spool_record(pool_digest=digest, session_key="dashboard:scoped")
+        openly = _spool_record(pool_digest=digest, session_key="dashboard:open")
+
+        denied = await handle_app_call(live.pool, {
+            "type": "app-call", "spool_id": scoped, "callback_secret": _cbs(scoped),
+            "tool": "draw", "arguments": {},
+        })
+        assert denied["type"] == "app-call-rejected"
+        assert "governance" in denied["reason"]
+
+        allowed = await handle_app_call(live.pool, {
+            "type": "app-call", "spool_id": openly, "callback_secret": _cbs(openly),
+            "tool": "draw", "arguments": {},
+        })
+        assert allowed["type"] == "app-result", (
+            "the scoped agent's profile leaked onto a co-tenant session: a shared "
+            "backend must not share one agent's ceiling with another's"
+        )
+    finally:
+        await live.aclose()
+        gp.reset_store()
+
+
+async def test_app_call_without_a_session_cannot_be_governed_so_it_is_denied(
+    apps_flag_on, spool_tmp, tmp_path, monkeypatch
+):
+    """Fail closed when the acting agent is unresolvable.
+
+    A spool record whose producer could not attribute a session names nobody, so
+    no agent-bound profile can be looked up. Borrowing the registrant's agent
+    off the PoolKey would answer with an arbitrary co-tenant of a shared
+    backend, so the call is refused -- the same polarity as every other refusal
+    on this path.
+    """
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
+    live = await _spawn_pooled_server()
+    try:
+        spool_id = _spool_record(
+            pool_digest=live.backend.pool_key.stable_hash(), session_key=""
+        )
+        reply = await handle_app_call(live.pool, {
+            "type": "app-call", "spool_id": spool_id, "callback_secret": _cbs(spool_id),
+            "tool": "draw", "arguments": {},
+        })
+        assert reply["type"] == "app-call-rejected"
+        assert "agent" in reply["reason"]
     finally:
         await live.aclose()
 
@@ -848,7 +965,9 @@ class _InboxBackend:
             self.inbox.put_nowait(line)
         self.detached: list[str] = []
 
-    async def attach_stub(self, stub_uuid: str) -> "asyncio.Queue[bytes]":
+    async def attach_stub(
+        self, stub_uuid: str, *, agent: str = ""
+    ) -> "asyncio.Queue[bytes]":
         return self.inbox
 
     async def forward_from_stub(self, stub_uuid: str, frame: dict, **kwargs) -> None:

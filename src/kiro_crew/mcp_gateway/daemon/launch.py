@@ -110,8 +110,12 @@ def _read_declared_env_sidecar(pool_key: PoolKey) -> Optional[dict[str, str]]:
     except Exception:
         logger.debug("declared-env: config unreadable; using default overlay dir", exc_info=True)
         overlay_dir = resolve_overlay_dir()
+    # Content-addressed: the name carries the ``effective_env_hash`` the stub
+    # computed over this very file, so this asks for the sidecar THIS key was
+    # hashed under. No agent appears in it — the agent is not a pool dimension,
+    # and a backend shared by several agents has no single agent to name here.
     path = env_sidecar_dir(overlay_dir) / env_sidecar_name(
-        pool_key.agent_name, pool_key.server_name
+        pool_key.server_name, pool_key.effective_env_hash
     )
     try:
         raw = path.read_text(encoding="utf-8")

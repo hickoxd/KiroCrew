@@ -373,7 +373,12 @@ async def _respawn_backend_for_stub_unrecorded(
                 # and legitimately, so tearing it down would punish every
                 # future session for this one's frozen view.
                 _refuse_replacement(stub_uuid, pool_key, captured_key, drift)
-        new_inbox = await new_backend.attach_stub(stub_uuid)
+        # Carry the status-page label across the respawn. The Register frame is
+        # long gone by here, and the dead backend is the only thing that still
+        # knows which agent this stub attached under.
+        new_inbox = await new_backend.attach_stub(
+            stub_uuid, agent=old_backend.agent_for_stub(stub_uuid)
+        )
         if replay_uris and conn is not None:
             # Rekey race: a ``claim`` frame can retarget this connection's
             # identity during the awaits above (acquire + prime). The

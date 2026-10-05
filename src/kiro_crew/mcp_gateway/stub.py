@@ -780,6 +780,13 @@ def build_register_payload(args: argparse.Namespace) -> dict:
         "type": "register",
         "stub_uuid": str(uuid.uuid4()),
         "server_name": args.server,
+        # NOT a pool dimension — the agent name never reaches the backend
+        # process, so two agents declaring one server identically share it (see
+        # the ``pool`` module docstring). Still sent, for two reasons: a daemon
+        # predating the removal runs a ``PoolKey.from_register`` that
+        # hard-requires the key and would reject every new stub as malformed,
+        # and a current daemon labels this connection's backend with it on the
+        # status page.
         "agent_name": args.agent,
         "command_args_hash": hash_command(args.target_command, target_args),
         "effective_env_hash": hash_effective_env(env_pairs, identity_keys=identity_keys),
@@ -814,6 +821,10 @@ def build_register_payload(args: argparse.Namespace) -> dict:
         # the key. Safe to drop once no daemon predating the key can be adopted.
         "user_identity": caller["principal_id"] or "unknown",
         "channel_id": channel_id,
+        # Wire-compat ballast on the same terms as ``user_identity`` above, and
+        # inert from the start: this has always been a constant run of 64 zeros,
+        # so it never partitioned anything. Deleted as a pool dimension; still
+        # sent so a daemon predating the deletion keeps accepting this register.
         "config_snapshot_hash": _CONFIG_SNAPSHOT_PLACEHOLDER,
         "caller": caller,
         # Claim-push (gateway → gatewayd ``claim`` frame): the ancestor PID

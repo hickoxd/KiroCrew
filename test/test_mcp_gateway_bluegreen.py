@@ -33,10 +33,9 @@ from kiro_crew.mcp_gateway.pool import (
 logger = logging.getLogger(__name__)
 
 
-def _make_pool_key(server: str = "test-server", agent: str = "test-agent") -> PoolKey:
+def _make_pool_key(server: str = "test-server") -> PoolKey:
     return PoolKey(
         server_name=server,
-        agent_name=agent,
         command_args_hash="abc123",
         effective_env_hash="def456",
         work_dir="/tmp/test",
@@ -46,7 +45,6 @@ def _make_pool_key(server: str = "test-server", agent: str = "test-agent") -> Po
         autoapprove_set_hash="ghi789",
         approval_mode="reads",
         trust_all_tools=False,
-        config_snapshot_hash="jkl012",
     )
 
 

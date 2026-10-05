@@ -58,7 +58,6 @@ def apps_flag_on(monkeypatch):
 def _pool_key() -> PoolKey:
     return PoolKey(
         server_name="fake-mcp-app",
-        agent_name="test-agent",
         command_args_hash="abc123",
         effective_env_hash="def456",
         work_dir="/tmp/test",
@@ -68,7 +67,6 @@ def _pool_key() -> PoolKey:
         autoapprove_set_hash="ghi789",
         approval_mode="reads",
         trust_all_tools=False,
-        config_snapshot_hash="jkl012",
     )
 
 

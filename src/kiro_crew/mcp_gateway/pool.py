@@ -4,12 +4,37 @@ Two sessions sharing a single backend MUST produce the same answers as if
 each had its own backend. Every attribute that changes backend behavior
 MUST be in :class:`PoolKey`, or two sessions can see cross-tenant state.
 
-The 12 dimensions captured below are the union of every spawn-time input
-that influences a Kiro MCP subprocess: identity (``server_name``,
-``agent_name``), execution (``command_args_hash``, ``effective_env_hash``,
-``work_dir``, ``binary_version``), security (``os_uid``, ``sandbox_mode``,
-``autoapprove_set_hash``, ``approval_mode``, ``trust_all_tools``), and
-config drift (``config_snapshot_hash``).
+The 10 dimensions captured below are the union of every spawn-time input
+that influences a Kiro MCP subprocess: identity (``server_name``),
+execution (``command_args_hash``, ``effective_env_hash``, ``work_dir``,
+``binary_version``), and security (``os_uid``, ``sandbox_mode``,
+``autoapprove_set_hash``, ``approval_mode``, ``trust_all_tools``).
+
+There is deliberately NO agent dimension. The agent name never reaches the
+backend process: the spawn is decided by ``command_args_hash``,
+``effective_env_hash``, ``work_dir`` and ``binary_version``, all of which
+already differ whenever two agents declare a server differently. Two agents
+that declare one server IDENTICALLY therefore asked for the same process,
+and giving each its own was pure duplication — on a host running several
+agents a common server ran up to five indistinguishable backends. What the
+name was still reached for is answered per call or per content instead:
+
+* The MCP Apps governance check resolves the acting agent from the CALL's
+  own ``session_key`` (``app_call._agent_for_session``) and fails closed when
+  it cannot, so each session's own profile applies through a shared backend
+  rather than the producing registrant's.
+* The declared-env sidecar is content-addressed by ``server_name`` plus the
+  ``effective_env_hash`` the key already carries, so the reader finds the
+  sidecar whose contents the key was hashed under.
+* The status page lists the agents of the sessions ATTACHED to each backend
+  (``Backend.attached_agents``), which is what an operator reading a shared
+  process wants to see and what a single key field could never hold.
+
+There is deliberately NO config-snapshot dimension either. A
+``config_snapshot_hash`` the stub still sends is ignored: its value is a
+constant run of 64 zero bytes, so it partitions nothing. Real config drift is
+carried by the execution-shape fields, which are recomputed from the spec the
+stub was launched with.
 
 There is deliberately NO channel dimension. A channel is not a trust
 boundary and never was a usable proxy for one:
@@ -150,7 +175,6 @@ class PoolKey:
 
     # Identity
     server_name: str
-    agent_name: str
 
     # Execution shape
     command_args_hash: str
@@ -165,9 +189,6 @@ class PoolKey:
     approval_mode: str
     trust_all_tools: bool
 
-    # Config drift
-    config_snapshot_hash: str
-
     # --- Constructors ------------------------------------------------------
 
     @classmethod
@@ -175,10 +196,10 @@ class PoolKey:
         """Build a :class:`PoolKey` from a stub's ``Register`` payload.
 
         The caller is responsible for providing pre-computed content hashes
-        for the structured fields (command_args, env, auto-approve,
-        config_snapshot). This mirrors the Rust stub's ``build_pool_key``
-        helper: the stub has the raw inputs and knows how to hash them, the
-        gateway just validates and stores.
+        for the structured fields (command_args, env, auto-approve). This
+        mirrors the Rust stub's ``build_pool_key`` helper: the stub has the
+        raw inputs and knows how to hash them, the gateway just validates
+        and stores.
 
         Raises :class:`ValueError` on missing or malformed fields.
         """
@@ -197,6 +218,13 @@ class PoolKey:
         # not a pool dimension — see the module docstring. The same applies
         # to ``user_identity``, which older stubs still send: it was deleted
         # as a pool dimension (it never isolated anything) and is ignored.
+        # ``agent_name`` and ``config_snapshot_hash`` are ignored on the same
+        # terms. Both are still SENT (see ``stub.build_register_payload``) and
+        # both are still read elsewhere on this frame — ``agent_name`` names the
+        # attaching session's agent on the status page, and gatewayd threads it
+        # nowhere near pool identity. Neither partitions the pool: the agent
+        # never reaches the backend process, and the snapshot hash is a constant
+        # run of zeros.
         # Security-boundary dims: type-check rather than coerce. bool("false")
         # is True and int() on a bool silently passes, so a stub sending a JSON
         # string/number for these could land in the wrong trust/uid partition.
@@ -211,7 +239,6 @@ class PoolKey:
         try:
             return cls(
                 server_name=str(register["server_name"]),
-                agent_name=str(register["agent_name"]),
                 command_args_hash=str(register["command_args_hash"]),
                 effective_env_hash=str(register["effective_env_hash"]),
                 work_dir=str(register["work_dir"]),
@@ -221,7 +248,6 @@ class PoolKey:
                 autoapprove_set_hash=str(register["autoapprove_set_hash"]),
                 approval_mode=str(register["approval_mode"]),
                 trust_all_tools=trust_all_tools,
-                config_snapshot_hash=str(register["config_snapshot_hash"]),
             )
         except (TypeError, ValueError) as exc:
             raise ValueError(f"Register payload has malformed field: {exc}") from exc
@@ -481,7 +507,11 @@ class BackendPool:
                 (
                     {
                         "server": b.pool_key.server_name,
-                        "agent": b.pool_key.agent_name,
+                        # The agents of the sessions ATTACHED right now, not a
+                        # key field: the agent is not a pool dimension, so one
+                        # backend legitimately serves several. Empty while a
+                        # backend is warm but unattached.
+                        "agents": b.attached_agents(),
                         "pid": b.pid,
                         "stubs": b.refcount,
                         "idle_s": round(max(0.0, now - b.last_used_at), 1),

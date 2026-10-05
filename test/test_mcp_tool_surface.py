@@ -49,7 +49,6 @@ def _no_real_metrics_file(monkeypatch: pytest.MonkeyPatch) -> None:
 def _pool_key(server: str = "surface-mcp") -> PoolKey:
     return PoolKey(
         server_name=server,
-        agent_name="kirocrew",
         command_args_hash="cah",
         effective_env_hash="eeh",
         work_dir="/nonexistent-work-dir",
@@ -59,7 +58,6 @@ def _pool_key(server: str = "surface-mcp") -> PoolKey:
         autoapprove_set_hash="aah",
         approval_mode="reads",
         trust_all_tools=False,
-        config_snapshot_hash="csh",
     )
 
 
@@ -546,7 +544,7 @@ class _ProbeBackend:
         self.forwarded: list[dict[str, Any]] = []
         self.nonces: list[str] = []
 
-    async def attach_stub(self, stub_uuid: str) -> "asyncio.Queue[bytes]":
+    async def attach_stub(self, stub_uuid: str, *, agent: str = "") -> "asyncio.Queue[bytes]":
         self.attached.append(stub_uuid)
         return self.inbox
 

@@ -59,6 +59,7 @@ from kiro_crew.mcp_gateway.hashing import (
     encode_target_args,
     expand_stub_flags,
     hash_command,
+    hash_effective_env,
     is_secret_env_key,
 )
 from kiro_crew.mcp_gateway.launch_approval import (
@@ -862,14 +863,25 @@ def _build_stub_entry(
         # every local principal. Also tightens a directory created before this
         # guarantee existed.
         platform_compat.make_owner_only_dir(env_dir)
-        # env_sidecar_name() and not a sanitize-each-component-then-join rule:
-        # joining sanitized components with a single '.' does fix the
-        # ('agent-a', 'server-b.c') vs ('agent-a.b', 'server-c') ambiguity, but
-        # sanitization is itself lossy, so an agent declaring both 'foo.bar' and
-        # 'foo_bar' still collides. The shared helper appends a digest of the RAW
-        # components, which is injective, and gatewayd's reader recomputes that
-        # same helper — so writer and reader can never disagree on the name.
-        env_file = env_dir / env_sidecar_name(agent_name, server_name)
+        # Resolve the content FIRST, because the name is a function of it. The
+        # sidecar is content-addressed on ``effective_env_hash`` (see
+        # ``env_sidecar_name``), which is the dimension the stub computes over
+        # this exact file and carries on its PoolKey — so gatewayd's reader can
+        # ask for "the sidecar this key was hashed under" without knowing which
+        # agent wrote it. The agent is deliberately absent: it is not a pool
+        # dimension, and a name carrying it would give two agents with identical
+        # declarations two separate files for the one backend they share.
+        #
+        # The coercion mirrors what BOTH readers apply (``stub._parse_env_json``
+        # and ``daemon.launch._read_declared_env_sidecar``): str keys and values,
+        # empty keys dropped. Hashing the raw map instead would name the file
+        # after a hash neither reader can reproduce.
+        expanded_env = _expand_env_map(env_pairs, notes=notes, server=server_name)
+        env_hash = hash_effective_env(
+            {str(k): str(v) for k, v in expanded_env.items() if k},
+            identity_keys=entry_identity_keys,
+        )
+        env_file = env_dir / env_sidecar_name(server_name, env_hash)
         # One publish path: always staged, and whoever owns the ledger commits.
         # A caller that passed none is not deferring, so a local ledger is
         # committed before this returns.
@@ -901,14 +913,11 @@ def _build_stub_entry(
                     # double-close (and does close it when an earlier step
                     # raised).
                     fd_owned = False
-                    # Resolve placeholders here (see _expand_env_map): the backend
-                    # is spawned from this sidecar, not by kiro-cli.
-                    fh.write(
-                        json.dumps(
-                            _expand_env_map(env_pairs, notes=notes, server=server_name),
-                            sort_keys=True,
-                        )
-                    )
+                    # Placeholders were resolved above, before the name was
+                    # computed (see _expand_env_map): the backend is spawned
+                    # from this sidecar, not by kiro-cli, and the file's name
+                    # is a hash of these very bytes.
+                    fh.write(json.dumps(expanded_env, sort_keys=True))
                 # Staged, not published: the rewrite pass commits after this
                 # agent's overlay write succeeds. The temp is already written and
                 # already owner-only -- protection precedes content either way.
@@ -3011,34 +3020,39 @@ def env_sidecar_dir(overlay_dir: Path) -> Path:
     return env_sidecar_dir_for_stubs(overlay_dir.parent / "stubs")
 
 
-def env_sidecar_name(agent_name: str, server_name: str) -> str:
-    """Return the declared-env sidecar FILE NAME for ``(agent, server)``.
+def env_sidecar_name(server_name: str, effective_env_hash: str) -> str:
+    """Return the declared-env sidecar FILE NAME for ``(server, env hash)``.
 
-    Shape: ``<sanitized-agent>.<sanitized-server>.<digest>.json``.
+    Shape: ``<sanitized-server>.<effective-env-hash>.json``.
 
-    The sanitized components stay in the name so an operator can identify the
-    file, but they are NOT what makes it unique — sanitization is lossy (every
-    non-``[A-Za-z0-9_-]`` char, including ``.``, becomes ``_``), so servers
-    ``foo.bar`` and ``foo_bar`` declared by the same agent would otherwise BOTH
-    map to ``agent.foo_bar.json``: the second write clobbers the first and one
-    server is handed the other's environment. The trailing 12-hex SHA-256 of the
-    NUL-delimited RAW components restores injectivity, so distinct
-    ``(agent, server)`` pairs can never share a file.
+    CONTENT-ADDRESSED, and that is the whole design. ``effective_env_hash`` is
+    the PoolKey dimension the stub computed over this very sidecar, so the name
+    is a function of what is inside the file: the reader
+    (``daemon.launch._read_declared_env_sidecar``) holds that hash on the
+    PoolKey and can therefore ask for the sidecar the key was hashed under,
+    without knowing which agent wrote it. That is what lets two agents declaring
+    one server IDENTICALLY share a backend — they also share this file, byte for
+    byte — while two agents declaring it DIFFERENTLY get different hashes, hence
+    different files, hence different backends.
+
+    The sanitized server name stays in the name so an operator can identify the
+    file. It is not what makes the name unique and does not need to be: the only
+    way two different declarations can sanitize onto one name is by also hashing
+    equal, which means equal contents, so a clobber can never hand a server
+    another server's environment. (Sanitization replaces every
+    non-``[A-Za-z0-9_-]`` char, ``.`` included.)
 
     Single source of truth for the naming rule: the rewriter writes the sidecar
     and ``gatewayd`` reads it back by recomputing this name from the PoolKey's
-    ``agent_name``/``server_name``, so a change here moves both ends at once.
-    Sidecars written under an older naming scheme are pruned as stale by
+    ``server_name``/``effective_env_hash``, so a change here moves both ends at
+    once. Sidecars written under an older naming scheme are pruned as stale by
     ``rewrite_agents`` (it deletes any ``env/*.json`` it did not just write).
     """
 
     def _san(s: str) -> str:
         return "".join(c if (c.isalnum() or c in "_-") else "_" for c in s)
 
-    digest = hashlib.sha256(
-        f"{agent_name}\0{server_name}".encode("utf-8")
-    ).hexdigest()[:12]
-    return f"{_san(agent_name)}.{_san(server_name)}.{digest}.json"
+    return f"{_san(server_name)}.{_san(effective_env_hash)}.json"
 
 
 def forward_declared_env_enabled() -> bool:

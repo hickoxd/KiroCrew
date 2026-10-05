@@ -44,12 +44,10 @@ from kiro_crew.mcp_gateway.shutdown_budget import (
 
 def _pool_key(
     server: str = "demo-mcp",
-    agent: str = "test-agent",
     env_hash: str = "def456",
 ) -> PoolKey:
     return PoolKey(
         server_name=server,
-        agent_name=agent,
         command_args_hash="abc123",
         effective_env_hash=env_hash,
         work_dir="/tmp/test",
@@ -59,7 +57,6 @@ def _pool_key(
         autoapprove_set_hash="ghi789",
         approval_mode="reads",
         trust_all_tools=False,
-        config_snapshot_hash="jkl012",
     )
 
 
@@ -311,20 +308,21 @@ class TestDeclaredEnvForwarding:
 
         ``identity_keys`` is the set THE STUB hashed with. Passing a set the
         daemon does not share is how a lying stub is modelled: the daemon
-        recomputes under its own configured set and the equality fails."""
+        recomputes under its own configured set and the equality fails.
+
+        The hash is computed BEFORE the write because the sidecar name carries
+        it: the file is content-addressed on ``effective_env_hash``, exactly as
+        the rewriter writes it."""
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
         sidecar_dir = env_sidecar_dir(resolve_overlay_dir())
         sidecar_dir.mkdir(parents=True, exist_ok=True)
-        path = sidecar_dir / env_sidecar_name(key.agent_name, key.server_name)
-        path.write_text(json.dumps(pairs), encoding="utf-8")
-        return _pool_key(
-            server=key.server_name,
-            agent=key.agent_name,
-            env_hash=hash_effective_env(
-                {str(k): str(v) for k, v in pairs.items() if k},
-                identity_keys=identity_keys,
-            ),
+        env_hash = hash_effective_env(
+            {str(k): str(v) for k, v in pairs.items() if k},
+            identity_keys=identity_keys,
         )
+        path = sidecar_dir / env_sidecar_name(key.server_name, env_hash)
+        path.write_text(json.dumps(pairs), encoding="utf-8")
+        return _pool_key(server=key.server_name, env_hash=env_hash)
 
     def test_the_eligibility_count_matches_the_forwarder_key_for_key(
         self, tmp_path, monkeypatch
@@ -513,7 +511,7 @@ class TestDeclaredEnvForwarding:
         assert reads["n"] == 1, "private path must snapshot the identity set once"
 
     def test_forwards_non_secret_declared_env(self, tmp_path, monkeypatch):
-        key = _pool_key(server="builder-mcp", agent="gpu-dev")
+        key = _pool_key(server="builder-mcp")
         key = self._write_sidecar(
             tmp_path, monkeypatch, {"TOOL_PERSONALIZATION_ENABLED": "false"}, key
         )
@@ -589,7 +587,7 @@ class TestDeclaredEnvForwarding:
         # Operator edits the spec; rewrite_agents rewrites the sidecar, but the
         # running stub keeps the PoolKey it registered with.
         sidecar = env_sidecar_dir(resolve_overlay_dir()) / env_sidecar_name(
-            key.agent_name, key.server_name
+            key.server_name, key.effective_env_hash
         )
         sidecar.write_text(
             json.dumps({"TOOL_PERSONALIZATION_ENABLED": "true"}), encoding="utf-8"
@@ -624,7 +622,7 @@ class TestDeclaredEnvForwarding:
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
         sidecar_dir = env_sidecar_dir(resolve_overlay_dir())
         sidecar_dir.mkdir(parents=True, exist_ok=True)
-        (sidecar_dir / env_sidecar_name(key.agent_name, key.server_name)).write_text(
+        (sidecar_dir / env_sidecar_name(key.server_name, key.effective_env_hash)).write_text(
             "{not json", encoding="utf-8"
         )
         assert gatewayd._declared_non_secret_env(key) == {}
@@ -634,40 +632,54 @@ class TestDeclaredEnvForwarding:
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
         sidecar_dir = env_sidecar_dir(resolve_overlay_dir())
         sidecar_dir.mkdir(parents=True, exist_ok=True)
-        (sidecar_dir / env_sidecar_name(key.agent_name, key.server_name)).write_text(
+        (sidecar_dir / env_sidecar_name(key.server_name, key.effective_env_hash)).write_text(
             '["a", "b"]', encoding="utf-8"
         )
         assert gatewayd._declared_non_secret_env(key) == {}
 
 
 class TestSidecarNaming:
-    def test_components_cannot_collide_across_the_boundary(self):
-        """``agent-a`` + ``server-b.c`` must not land on the same file as
-        ``agent-a.b`` + ``server-c``."""
-        assert env_sidecar_name("agent-a", "server-b.c") != env_sidecar_name(
-            "agent-a.b", "server-c"
+    def test_the_name_carries_no_agent(self):
+        """The whole point of content-addressing: two agents declaring ONE
+        server with the SAME env must reach the SAME sidecar, because they also
+        share one backend. An agent in the name would give them two files and,
+        through the PoolKey, two processes."""
+        env = {"TOOL_PERSONALIZATION_ENABLED": "false"}
+        env_hash = hash_effective_env(env)
+        assert env_sidecar_name("builder-mcp", env_hash) == env_sidecar_name(
+            "builder-mcp", env_hash
         )
 
-    def test_lossy_sanitization_cannot_collide_within_a_component(self):
-        """Regression: sanitization maps both ``foo.bar`` and ``foo_bar`` to
-        ``foo_bar``, so without the digest suffix two servers declared by ONE
-        agent shared a sidecar and the second write handed the first server the
-        wrong environment."""
-        a = env_sidecar_name("agent", "foo.bar")
-        b = env_sidecar_name("agent", "foo_bar")
+    def test_a_different_env_is_a_different_file(self):
+        """Negative control for the test above: content-addressing must still
+        separate two agents that declare the SAME server DIFFERENTLY, because
+        those get different PoolKeys and different backends."""
+        a = env_sidecar_name("builder-mcp", hash_effective_env({"A": "1"}))
+        b = env_sidecar_name("builder-mcp", hash_effective_env({"A": "2"}))
         assert a != b
-        assert a.startswith("agent.foo_bar.") and b.startswith("agent.foo_bar.")
+
+    def test_lossy_sanitization_cannot_hand_over_the_wrong_env(self):
+        """Sanitization maps both ``foo.bar`` and ``foo_bar`` to ``foo_bar``, so
+        two servers CAN land on one name — but only when their env also hashes
+        equal, which means the contents are identical. So a clobber can never
+        hand a server another server's environment, which is the property the
+        old raw-component digest existed for."""
+        env_hash = hash_effective_env({"A": "1"})
+        same = env_sidecar_name("foo.bar", env_hash)
+        assert same == env_sidecar_name("foo_bar", env_hash)
+        # Different contents never share a name, whatever the server spells.
+        assert same != env_sidecar_name("foo_bar", hash_effective_env({"A": "2"}))
 
     def test_name_is_deterministic(self):
         """Writer and reader recompute the name independently, so it must be a
         pure function of the raw components."""
-        assert env_sidecar_name("gpu-dev", "builder-mcp") == env_sidecar_name(
-            "gpu-dev", "builder-mcp"
+        assert env_sidecar_name("builder-mcp", "e" * 64) == env_sidecar_name(
+            "builder-mcp", "e" * 64
         )
 
-    def test_readable_components_are_preserved_and_sanitized(self):
+    def test_readable_server_is_preserved_and_sanitized(self):
         name = env_sidecar_name("a.b", "c")
-        assert name.startswith("a_b.c.")
+        assert name.startswith("a_b.c")
         assert name.endswith(".json")
 
     def test_sidecar_dir_is_a_sibling_of_the_agents_overlay(self, tmp_path, monkeypatch):
@@ -817,7 +829,7 @@ class TestPrivateBackendDeclaredEnv:
 
     def test_forwards_declared_env_with_the_flag_off(self, tmp_path, monkeypatch):
         """The flag governs the co-tenancy hazard, which does not exist here."""
-        key = _pool_key(server="builder-mcp", agent="gpu-dev")
+        key = _pool_key(server="builder-mcp")
         key = TestDeclaredEnvForwarding._write_sidecar(
             tmp_path, monkeypatch, {"TOOL_PERSONALIZATION_ENABLED": "false"}, key
         )
@@ -844,7 +856,7 @@ class TestPrivateBackendDeclaredEnv:
             "SSH_AUTH_SOCK": "/tmp/agent.sock",
             "REGION": "us-west-2",
         }
-        key = _pool_key(server="gh-mcp", agent="dev")
+        key = _pool_key(server="gh-mcp")
         key = TestDeclaredEnvForwarding._write_sidecar(
             tmp_path, monkeypatch, pairs, key
         )
@@ -858,7 +870,7 @@ class TestPrivateBackendDeclaredEnv:
         from kiro_crew.mcp_gateway import launch_approval
 
         approved = {"AWS_SECRET_ACCESS_KEY": "first", "REGION": "us-west-2"}
-        key = _pool_key(server="gh-mcp", agent="dev")
+        key = _pool_key(server="gh-mcp")
         key = TestDeclaredEnvForwarding._write_sidecar(tmp_path, monkeypatch, approved, key)
         approved_hash = launch_approval.env_fingerprint(approved)
         monkeypatch.setattr(
@@ -870,7 +882,7 @@ class TestPrivateBackendDeclaredEnv:
         assert gatewayd._declared_env_for_private_backend(key) == approved
 
         sidecar = env_sidecar_dir(resolve_overlay_dir()) / env_sidecar_name(
-            key.agent_name, key.server_name
+            key.server_name, key.effective_env_hash
         )
         changed = {**approved, "AWS_SECRET_ACCESS_KEY": "second"}
         sidecar.write_text(json.dumps(changed), encoding="utf-8")
@@ -884,7 +896,7 @@ class TestPrivateBackendDeclaredEnv:
         from kiro_crew.mcp_gateway.hashing import hash_command
 
         approved = {"AWS_SESSION_TOKEN": "first", "REGION": "us-west-2"}
-        key = _pool_key(server="gh-mcp", agent="dev")
+        key = _pool_key(server="gh-mcp")
         key = TestDeclaredEnvForwarding._write_sidecar(tmp_path, monkeypatch, approved, key)
         command = sys.executable
         monkeypatch.setenv("KIROCREW_MCP_TARGET_GH_MCP", shlex.quote(command))
@@ -900,7 +912,7 @@ class TestPrivateBackendDeclaredEnv:
             assert gatewayd.env_target_resolver(key) is not None
 
             sidecar = env_sidecar_dir(resolve_overlay_dir()) / env_sidecar_name(
-                key.agent_name, key.server_name
+                key.server_name, key.effective_env_hash
             )
             changed = {**approved, "AWS_SESSION_TOKEN": "second"}
             sidecar.write_text(json.dumps(changed), encoding="utf-8")
@@ -913,12 +925,12 @@ class TestPrivateBackendDeclaredEnv:
         spec edited after this session started must not reach the backend under a
         hash the running stub never registered.
         """
-        key = _pool_key(server="builder-mcp", agent="gpu-dev")
+        key = _pool_key(server="builder-mcp")
         key = TestDeclaredEnvForwarding._write_sidecar(
             tmp_path, monkeypatch, {"A": "1"}, key
         )
         sidecar = env_sidecar_dir(resolve_overlay_dir()) / env_sidecar_name(
-            key.agent_name, key.server_name
+            key.server_name, key.effective_env_hash
         )
         sidecar.write_text(json.dumps({"A": "2"}), encoding="utf-8")
 

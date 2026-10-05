@@ -95,7 +95,6 @@ def _no_real_metrics_file(monkeypatch: pytest.MonkeyPatch) -> None:
 def _pool_key(server: str = "example-mcp") -> PoolKey:
     return PoolKey(
         server_name=server,
-        agent_name="kirocrew",
         command_args_hash="cah",
         effective_env_hash="eeh",
         work_dir="/nonexistent-work-dir",
@@ -105,7 +104,6 @@ def _pool_key(server: str = "example-mcp") -> PoolKey:
         autoapprove_set_hash="aah",
         approval_mode="reads",
         trust_all_tools=False,
-        config_snapshot_hash="csh",
     )
 
 
@@ -369,6 +367,36 @@ class TestAttachDetachAndAccounting:
     async def test_detach_unknown_stub_is_noop(self) -> None:
         backend = _make_backend()
         assert await backend.detach_stub("ghost") == 0
+
+    @pytest.mark.asyncio
+    async def test_attached_agents_lists_every_agent_sharing_the_backend(self) -> None:
+        """What the status page shows now that the agent is not a key field.
+
+        The old column read one agent off the PoolKey; a shared backend has
+        several, so the row lists the agents actually attached. Distinct and
+        sorted, because the row is read by an operator.
+        """
+        backend = _make_backend()
+        await backend.attach_stub("s1", agent="gpu-dev")
+        await backend.attach_stub("s2", agent="kirocrew")
+        await backend.attach_stub("s3", agent="gpu-dev")
+        assert backend.attached_agents() == ["gpu-dev", "kirocrew"]
+        assert backend.agent_for_stub("s2") == "kirocrew"
+
+        # A detach takes the agent with it, so the page never names a session
+        # that has gone.
+        await backend.detach_stub("s2")
+        assert backend.attached_agents() == ["gpu-dev"]
+        assert backend.agent_for_stub("s2") == ""
+
+    @pytest.mark.asyncio
+    async def test_a_nameless_stub_contributes_no_blank_agent(self) -> None:
+        """An ephemeral app-call stub has no session behind it, so it names no
+        agent. It must not show up as an empty entry in the row."""
+        backend = _make_backend()
+        await backend.attach_stub("__app_call__abc")
+        assert backend.attached_agents() == []
+        assert backend.agent_for_stub("__app_call__abc") == ""
 
     @pytest.mark.asyncio
     async def test_outstanding_work_sums_all_three_sources(self) -> None:

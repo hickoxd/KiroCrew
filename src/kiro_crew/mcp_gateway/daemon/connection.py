@@ -168,6 +168,11 @@ async def _handle_connection(
         return
 
     stub_uuid = str(register.get("stub_uuid", ""))
+    # Diagnostics only: the agent this stub was wrapped for. It is NOT a pool
+    # dimension, so it is read off the frame here rather than off ``pool_key``,
+    # and it reaches only ``Backend.attached_agents`` for the status page. That
+    # is also why an empty or lying value is harmless: nothing routes on it.
+    stub_agent = str(register.get("agent_name") or "")
     # Absent ``poolable`` means this connection gets its own backend. Absence is
     # the safe default in both directions: an overlay written before the flag
     # existed never silently starts sharing, and a malformed frame cannot widen
@@ -470,7 +475,7 @@ async def _handle_connection(
                     # Attach BEFORE replying ``ready`` so the stub can never
                     # forward a frame before its inbox exists.
                     try:
-                        inbox = await backend.attach_stub(stub_uuid)
+                        inbox = await backend.attach_stub(stub_uuid, agent=stub_agent)
                     finally:
                         # Once attached, refcount>0 keeps the backend from
                         # eviction, so the hand-out reservation can go.
@@ -518,7 +523,7 @@ async def _handle_connection(
                     await _refuse_lazy_spawn(exc, writer, caller=caller, pool_key=pool_key)
                     return
                 try:
-                    inbox = await backend.attach_stub(stub_uuid)
+                    inbox = await backend.attach_stub(stub_uuid, agent=stub_agent)
                 finally:
                     _release_reservation()
                 writer_task = asyncio.create_task(

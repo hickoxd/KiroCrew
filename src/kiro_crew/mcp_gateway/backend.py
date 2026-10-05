@@ -874,6 +874,13 @@ class Backend:
     # ``len(_stub_inboxes)`` as a fast read-only integer so the idle-sweep
     # does not have to acquire the inbox lock on every pass.
     _stub_inboxes: dict[str, "asyncio.Queue[bytes]"] = field(default_factory=dict)
+    # The agent each attached stub declared, keyed by the same stub_uuid, for
+    # the status page. Diagnostics ONLY, and nothing routes on it: the agent is
+    # not a pool dimension (see ``pool`` module docstring), so a shared backend
+    # has several and a key field could not hold them. Kept in step with
+    # ``_stub_inboxes`` by ``attach_stub``/``detach_stub`` under the same lock,
+    # which is what bounds it.
+    _stub_agents: dict[str, str] = field(default_factory=dict)
     _inbox_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     refcount: int = 0
     # Non-empty on a backend bound to a single connection, holding that
@@ -1149,11 +1156,42 @@ class Backend:
         real traffic from accumulated stragglers."""
         self.last_used_at = now if now is not None else time.monotonic()
 
-    async def attach_stub(self, stub_uuid: str) -> "asyncio.Queue[bytes]":
+    def attached_agents(self) -> list[str]:
+        """The distinct agents of the stubs attached right now, sorted.
+
+        What the status page reads. The agent is not a pool dimension, so the
+        PoolKey holds no single agent to name: a shared backend has one entry
+        per attached stub that named one. Empty entries (an ephemeral app-call
+        stub, an overlay whose stubs declare no agent) are dropped rather than
+        shown as blanks.
+
+        Lock-free on purpose — ``dict`` reads are atomic under the one event
+        loop every mutation also runs on, and the metrics snapshot must not
+        queue behind an attach.
+        """
+        return sorted({a for a in self._stub_agents.values() if a})
+
+    def agent_for_stub(self, stub_uuid: str) -> str:
+        """The agent ``stub_uuid`` attached under, or ``""``.
+
+        Exists so a transparent respawn can carry the label onto the
+        replacement backend without re-reading the Register frame, which it no
+        longer holds. Same diagnostics-only status as :meth:`attached_agents`.
+        """
+        return self._stub_agents.get(stub_uuid, "")
+
+    async def attach_stub(
+        self, stub_uuid: str, *, agent: str = ""
+    ) -> "asyncio.Queue[bytes]":
         """Register ``stub_uuid`` as an active consumer of this backend.
 
         Returns a fresh inbox queue the connection handler must drain. The
         refcount bumps so the idle-sweep skips this backend.
+
+        ``agent`` is the attaching stub's declared agent, recorded for
+        :meth:`attached_agents` and read by nothing else. It defaults to empty
+        so a caller with no session behind it — the ephemeral app-call stub —
+        does not have to invent one.
         """
         inbox: "asyncio.Queue[bytes]" = asyncio.Queue(maxsize=_STUB_INBOX_MAXSIZE)
         async with self._inbox_lock:
@@ -1162,6 +1200,8 @@ class Backend:
                     f"stub_uuid={stub_uuid} already attached to backend pid={self.pid}"
                 )
             self._stub_inboxes[stub_uuid] = inbox
+            if agent:
+                self._stub_agents[stub_uuid] = agent
             self.refcount = len(self._stub_inboxes)
         self.touch()
         logger.debug(
@@ -1341,6 +1381,9 @@ class Backend:
         """
         async with self._inbox_lock:
             self._stub_inboxes.pop(stub_uuid, None)
+            # Under the same lock as the inbox it shadows, so the status page
+            # can never name an agent whose stub has already gone.
+            self._stub_agents.pop(stub_uuid, None)
             self.refcount = len(self._stub_inboxes)
         # Bounded-table hygiene. (A replay in flight for a detached stub is
         # already handled at grant time: a replay grant is honoured only

@@ -86,10 +86,9 @@ class _FakeReader:
         return self._line
 
 
-def _pool_key(server: str = "demo-mcp", agent: str = "cov-agent", env_hash: str = "e" * 8) -> PoolKey:
+def _pool_key(server: str = "demo-mcp", env_hash: str = "e" * 8) -> PoolKey:
     return PoolKey(
         server_name=server,
-        agent_name=agent,
         command_args_hash="a" * 8,
         effective_env_hash=env_hash,
         work_dir="/tmp/cov",
@@ -99,7 +98,6 @@ def _pool_key(server: str = "demo-mcp", agent: str = "cov-agent", env_hash: str 
         autoapprove_set_hash="b" * 8,
         approval_mode="reads",
         trust_all_tools=False,
-        config_snapshot_hash="c" * 8,
     )
 
 
@@ -935,7 +933,7 @@ class TestDeclaredNonSecretEnv:
         overlay = resolve_overlay_dir()
         directory = env_sidecar_dir(overlay)
         directory.mkdir(parents=True, exist_ok=True)
-        path = directory / env_sidecar_name(key.agent_name, key.server_name)
+        path = directory / env_sidecar_name(key.server_name, key.effective_env_hash)
         path.write_text(json.dumps(payload), encoding="utf-8")
         return path
 
@@ -960,7 +958,7 @@ class TestDeclaredNonSecretEnv:
         overlay = resolve_overlay_dir()
         directory = env_sidecar_dir(overlay)
         directory.mkdir(parents=True, exist_ok=True)
-        (directory / env_sidecar_name(key.agent_name, key.server_name)).write_text(
+        (directory / env_sidecar_name(key.server_name, key.effective_env_hash)).write_text(
             "{not json", encoding="utf-8"
         )
         assert gw._declared_non_secret_env(key) == {}
@@ -1614,7 +1612,7 @@ class TestRespawnBackendForStub:
         )
 
         assert out is not None
-        fresh.attach_stub.assert_awaited_once_with("stub-r9")
+        fresh.attach_stub.assert_awaited_once_with("stub-r9", agent="")
         await _drain_task(out[2])
 
     @pytest.mark.asyncio
@@ -1700,7 +1698,7 @@ class TestRespawnBackendForStub:
         owner = CallerContext(session_key="dashboard:old-owner")
         conn = gw._StubConn("stub-r18", [], "pool", owner)
 
-        async def _attach_then_rekey(stub_uuid):
+        async def _attach_then_rekey(stub_uuid, *, agent=""):
             # The claim lands during the adoption await, past the early check.
             conn.caller = CallerContext(session_key="dashboard:new-owner")
             return asyncio.Queue()
@@ -1727,7 +1725,7 @@ class TestRespawnBackendForStub:
 
         # The stub it had just attached is released, or the refcount holds a stub
         # that is about to be told the adoption failed.
-        fresh.attach_stub.assert_awaited_once_with("stub-r18")
+        fresh.attach_stub.assert_awaited_once_with("stub-r18", agent="")
         fresh.detach_stub.assert_awaited_once_with("stub-r18")
 
     @pytest.mark.asyncio
@@ -1757,7 +1755,7 @@ class TestRespawnBackendForStub:
         )
 
         assert out is not None
-        fresh.attach_stub.assert_awaited_once_with("stub-r15")
+        fresh.attach_stub.assert_awaited_once_with("stub-r15", agent="")
         await _drain_task(out[2])
 
     @pytest.mark.asyncio

@@ -174,8 +174,51 @@ def _tool_visible_to_app(tool: dict[str, Any]) -> bool:
     return visibility_allows(tool, AUDIENCE_APP).allowed
 
 
+def _agent_for_session(session_key: str) -> Optional[str]:
+    """The agent *session_key* acts as, or ``None`` when that is not knowable.
+
+    This is the governance input, so the answer has to be about THIS call's
+    session and nothing else. It is read from the session's own execution
+    record rather than from the backend serving the call: the backend is pooled
+    and the agent is not a pool dimension, so one backend legitimately serves
+    several agents and the registrant that happened to spawn it is not the
+    agent invoking this tool. Reading it from there would hand one agent
+    another agent's ceiling — in either direction.
+
+    Three answers, and the distinction between the last two is the whole point:
+
+    * A recorded selection — the agent this session runs. Returned.
+    * A readable record with no selection — the session runs the host default,
+      which carries no agent-bound profile. ``""``: a RESOLVED empty agent,
+      which narrows nothing because there is nothing agent-specific to narrow.
+    * No session to name, or a record that cannot be read — ``None``. The
+      acting agent is unknown, and an unknown agent is exactly the case where
+      a tightly-scoped profile would be silently skipped, so the caller denies.
+
+    BLOCKING: reads the session record. Callers must run it off the event loop.
+    """
+    if not session_key:
+        # An unattributed spool record (the producer could not name its
+        # session). Nothing identifies who is calling, so nothing can govern
+        # it: deny rather than evaluate against a surface picked by default.
+        return None
+    try:
+        # Deferred: pulls in the config and history stack, which the gateway's
+        # hot paths never need.
+        from kiro_crew.session_agent_selection import session_agent_selection_name
+
+        return session_agent_selection_name(session_key) or ""
+    except Exception as exc:
+        logger.warning(
+            "app-call: cannot resolve the agent for session %r; denying: %s",
+            session_key,
+            exc,
+        )
+        return None
+
+
 def _governance_denial(
-    server: str, tool_name: str, session_key: str, *, agent: str = ""
+    server: str, tool_name: str, session_key: str, *, agent: Optional[str] = ""
 ) -> Optional[str]:
     """Evaluate governance (``policy ∩ profile``) for an app-originated call.
 
@@ -185,10 +228,12 @@ def _governance_denial(
     single un-disableable ceiling across BOTH tool-invocation authorities —
     an enterprise deny that binds the model now binds an embedded app too.
 
-    ``agent`` is the producing backend's agent name: a tightly-scoped agent may
-    carry its own task-bound deny profile, and resolving without it would let
-    an app callback execute a tool the agent's own profile forbids (its ceiling
-    would be silently widened to the surface profile).
+    ``agent`` is the agent the CALLING session acts as, as
+    :func:`_agent_for_session` resolved it. A tightly-scoped agent may carry
+    its own task-bound deny profile, so resolving without it would let an app
+    callback execute a tool that agent's profile forbids (its ceiling would be
+    silently widened to the surface profile). ``None`` means the resolution
+    failed, and denies: an unknown agent is indistinguishable from a narrow one.
 
     Freshness note: Plane A uses the boot-frozen ceiling on the dashboard
     process; gatewayd is a separate daemon, so the policy is loaded per call
@@ -199,6 +244,8 @@ def _governance_denial(
     from Plane A's soft fail-open, which is backstopped by the always-on deny
     floor — a floor this app-originated path does not traverse.
     """
+    if agent is None:
+        return "cannot resolve the calling session's agent"
     try:
         # circular import: platform.governance imports gateway-adjacent modules;
         # loaded per-call (also keeps the policy read fresh). Keep lazy.
@@ -368,9 +415,15 @@ async def handle_app_call(pool: Any, frame: dict[str, Any]) -> dict[str, Any]:
     # Governance ceiling (policy ∩ profile) on the canonical @server/tool ref —
     # same decision Plane A applies to model-originated MCP calls. Offloaded:
     # the evaluation reads the policy file from disk. Fail-closed inside.
+    # The agent comes from THIS call's session, not from the backend: the
+    # backend is pooled, the agent is not a pool dimension, and the registrant
+    # that spawned it may be a different agent entirely. Resolved in the same
+    # worker as the policy read — both are disk reads, and splitting them would
+    # cost a second thread hop for one decision.
     denial = await asyncio.to_thread(
-        _governance_denial, server, tool_name, session_key,
-        agent=getattr(backend.pool_key, "agent_name", "") or "",
+        lambda: _governance_denial(
+            server, tool_name, session_key, agent=_agent_for_session(session_key)
+        )
     )
     if denial is not None:
         return _rejected(denial, **audit_kw)

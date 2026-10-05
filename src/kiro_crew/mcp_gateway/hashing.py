@@ -454,8 +454,13 @@ def hash_effective_env(env_pairs: Mapping[str, str], *, identity_keys: Collectio
 #: Fields :func:`format_pool_label` reads. Both producers hold all of them: a
 #: Register payload by construction, and a
 #: :class:`~kiro_crew.mcp_gateway.pool.PoolKey` as dataclass fields.
+#:
+#: Every name here is a POOL DIMENSION, which is what keeps the two producers
+#: interchangeable. ``agent_name`` is on a Register payload but is not a
+#: dimension, so labelling with it would make the stub's line and the daemon's
+#: differ for one identity — and would read as though the agent split the pool,
+#: which is the very belief an operator reads this label to check.
 _LABEL_FIELDS = (
-    "agent_name",
     "server_name",
     "os_uid",
     "sandbox_mode",
@@ -490,7 +495,7 @@ def format_pool_label(fields: Mapping[str, Any]) -> str:
         return (text[:8] + "\u2026") if len(text) > 8 else text
 
     return (
-        f"{fields['agent_name']}:{fields['server_name']} "
+        f"{fields['server_name']} "
         f"uid={fields['os_uid']} sbx={fields['sandbox_mode']} "
         f"cmd={short(fields['command_args_hash'])} "
         f"env={short(fields['effective_env_hash'])} ws={fields['work_dir']}"

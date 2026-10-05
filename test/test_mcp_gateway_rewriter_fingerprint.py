@@ -26,7 +26,7 @@ import pytest
 from conftest import make_dir_link
 from kiro_crew import agent_discovery
 from kiro_crew.mcp_gateway import rewriter
-from kiro_crew.mcp_gateway.hashing import expand_stub_flags
+from kiro_crew.mcp_gateway.hashing import expand_stub_flags, hash_effective_env
 from kiro_crew.mcp_gateway.rewriter import (
     _FINGERPRINT_NAME,
     overlay_ready,
@@ -2075,18 +2075,24 @@ def test_a_failed_overlay_write_leaves_the_previous_generations_sidecar(
     """A kept overlay must never pair with the next generation's env.
 
     agent-1 changes BOTH its args and its env, then its overlay write fails.
-    The kept overlay carries the old args and points --env-file at a fixed
-    sidecar name: publishing the new env there would launch old args against
-    new credentials for the pass window. The staged write is discarded instead.
-    Per-agent, not pass-wide: agent-0's overlay landed, so its env commits.
+    The kept overlay carries the old args and names a sidecar: publishing the
+    new env there would launch old args against new credentials for the pass
+    window. The staged write is discarded instead. Per-agent, not pass-wide:
+    agent-0's overlay landed, so its env commits.
+
+    Read through the overlay's OWN ``--env-file``, which is the only thing the
+    launch actually follows. The sidecar is content-addressed on the env hash,
+    so both agents share one file while their env agrees and the new generation
+    lands under a different name -- and the kept overlay still points at the
+    old one, which the prune spares because this pass failed an overlay write.
     """
     src = _mk_tree(tmp_path, env={"K": "old"})
     _rewrite(tmp_path)
     env_dir = tmp_path / "mcp-gateway" / "stubs" / "env"
-    victim_sidecar = env_dir / rewriter.env_sidecar_name("agent-1", "srv")
-    healthy_sidecar = env_dir / rewriter.env_sidecar_name("agent-0", "srv")
-    assert json.loads(victim_sidecar.read_text())["K"] == "old"
-    assert json.loads(healthy_sidecar.read_text())["K"] == "old"
+    old_sidecar = env_dir / rewriter.env_sidecar_name("srv", hash_effective_env({"K": "old"}))
+    new_sidecar = env_dir / rewriter.env_sidecar_name("srv", hash_effective_env({"K": "new"}))
+    assert json.loads(old_sidecar.read_text())["K"] == "old"
+    assert not new_sidecar.exists()
 
     for i in (0, 1):
         spec_path = src / f"agent-{i}.json"
@@ -2108,11 +2114,13 @@ def test_a_failed_overlay_write_leaves_the_previous_generations_sidecar(
     kept = json.loads((tmp_path / "mcp-gateway" / "agents" / "agent-1.json").read_text())
     kept_flags = expand_stub_flags(kept["mcpServers"]["srv"]["args"])
     assert "--env-file" in kept_flags, "premise: the kept overlay names a sidecar"
+    kept_env_file = Path(kept_flags[kept_flags.index("--env-file") + 1])
+    assert kept_env_file == old_sidecar, "the kept overlay moved to the new generation's sidecar"
     assert (
-        json.loads(victim_sidecar.read_text())["K"] == "old"
+        json.loads(kept_env_file.read_text())["K"] == "old"
     ), "the kept overlay's old args now launch against the new generation's env"
     assert (
-        json.loads(healthy_sidecar.read_text())["K"] == "new"
+        json.loads(new_sidecar.read_text())["K"] == "new"
     ), "a sibling's successful overlay must still commit its own sidecar"
     assert _sidecar_temps(env_dir) == [], "a discarded sidecar left its temp file behind"
     # Degraded pass not cached: the next boot retries and both sides converge.
@@ -2163,7 +2171,9 @@ def test_a_staged_sidecar_is_owner_only_and_complete_before_it_is_committed(
         if rewriter.platform_compat.IS_POSIX:
             assert mode == 0o600, f"staged sidecar readable by others: {oct(mode)}"
     # Committed by the end of the pass, at its published name, nothing left over.
-    assert (env_dir / rewriter.env_sidecar_name("agent-0", "srv")).is_file()
+    assert (
+        env_dir / rewriter.env_sidecar_name("srv", hash_effective_env({"SECRET_TOKEN": "s3cr3t"}))
+    ).is_file()
     assert _sidecar_temps(env_dir) == []
     assert (src / "agent-0.json").is_file()
 
@@ -2205,20 +2215,34 @@ def test_a_failed_sidecar_commit_publishes_no_other_generations_env(
     another generation's credentials. Both readers treat a MISSING sidecar as
     "declares no env", which is the degradation a failed staging write already
     produces, and the pass is uncacheable so the next one republishes.
-    """
-    src = _mk_tree(tmp_path, env={"K": "old"})
-    _rewrite(tmp_path)
-    env_dir = tmp_path / "mcp-gateway" / "stubs" / "env"
-    victim_sidecar = env_dir / rewriter.env_sidecar_name("agent-1", "srv")
-    healthy_sidecar = env_dir / rewriter.env_sidecar_name("agent-0", "srv")
-    assert json.loads(victim_sidecar.read_text())["K"] == "old"
 
-    for i in (0, 1):
+    The two agents are given DIFFERENT env so they own different sidecars: the
+    file is content-addressed on the env hash, so agents declaring one server
+    identically share a file (and a backend), and only a declared difference
+    makes "the sibling's own sidecar" a distinct thing to be unaffected.
+    """
+    src = _mk_tree(tmp_path)
+    env_dir = tmp_path / "mcp-gateway" / "stubs" / "env"
+
+    def _declare(i: int, value: str) -> None:
         spec_path = src / f"agent-{i}.json"
         spec = json.loads(spec_path.read_text())
-        spec["mcpServers"]["srv"]["args"] = [f"a{i}-changed"]
-        spec["mcpServers"]["srv"]["env"] = {"K": "new"}
+        spec["mcpServers"]["srv"]["args"] = [f"a{i}-{value}"]
+        spec["mcpServers"]["srv"]["env"] = {"K": f"{value}-{i}"}
         spec_path.write_text(json.dumps(spec))
+
+    def _sidecar(i: int, value: str) -> Path:
+        return env_dir / rewriter.env_sidecar_name("srv", hash_effective_env({"K": f"{value}-{i}"}))
+
+    for i in (0, 1):
+        _declare(i, "old")
+    _rewrite(tmp_path)
+    victim_sidecar = _sidecar(1, "new")
+    healthy_sidecar = _sidecar(0, "new")
+    assert json.loads(_sidecar(1, "old").read_text())["K"] == "old-1"
+
+    for i in (0, 1):
+        _declare(i, "new")
 
     real_replace = os.replace
 
@@ -2240,7 +2264,7 @@ def test_a_failed_sidecar_commit_publishes_no_other_generations_env(
         "a stale sidecar under a freshly published overlay pairs the new command "
         "with another generation's credentials"
     )
-    assert json.loads(healthy_sidecar.read_text())["K"] == "new"  # sibling unaffected
+    assert json.loads(healthy_sidecar.read_text())["K"] == "new-0"  # sibling unaffected
     assert _sidecar_temps(env_dir) == []
     assert not (tmp_path / "mcp-gateway" / "agents" / _FINGERPRINT_NAME).exists()
 

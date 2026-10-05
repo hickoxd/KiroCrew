@@ -18,7 +18,11 @@ import pytest
 
 from kiro_crew.mcp_cleanup import mcp_entry_is_muted, mcp_entry_is_registry_governed
 from kiro_crew.mcp_gateway import rewriter
-from kiro_crew.mcp_gateway.hashing import expand_stub_flags, is_secret_env_key
+from kiro_crew.mcp_gateway.hashing import (
+    expand_stub_flags,
+    hash_effective_env,
+    is_secret_env_key,
+)
 from kiro_crew.mcp_gateway.manager import is_credential_env_key
 from kiro_crew.mcp_gateway.rewriter import (
     _WRAPPER_MARKER,
@@ -1115,10 +1119,59 @@ def test_rewriter_writes_resolved_env_to_sidecar(tmp_path: Path, monkeypatch) ->
     }
     _rewrite(spec, tmp_path, stub_servers=frozenset({"srv"}), forward_env=True)
 
-    sidecar = env_sidecar_dir_for_stubs(tmp_path / "stubs") / env_sidecar_name("agent-a", "srv")
+    # Found by its CONTENT, not by its name: the sidecar is content-addressed
+    # on ``effective_env_hash``, so the test does not have to know the agent --
+    # which is the point, since the agent is not part of the name any more.
+    sidecar = env_sidecar_dir_for_stubs(tmp_path / "stubs") / env_sidecar_name(
+        "srv", hash_effective_env({"AUTH": "s3cr3t-token", "OTHER": "${MISSING}"})
+    )
     written = json.loads(sidecar.read_text(encoding="utf-8"))
     assert written["AUTH"] == "s3cr3t-token"  # resolved
     assert written["OTHER"] == "${MISSING}"  # unresolved stays literal
+
+
+def test_two_agents_declaring_one_server_alike_share_its_sidecar(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The sidecar follows the backend, so identical declarations share a file.
+
+    The name carries ``effective_env_hash``, which is the PoolKey dimension
+    these two agents agree on -- so they reach one sidecar for the same reason
+    they reach one backend. A name carrying the agent would give them two of
+    each.
+    """
+    monkeypatch.setenv("MYVAR", "s3cr3t-token")
+    paths = []
+    for agent in ("gpu-dev", "kirocrew"):
+        spec = {
+            "name": agent,
+            "mcpServers": {
+                "srv": {"command": sys.executable, "env": {"AUTH": "${env:MYVAR}"}},
+            },
+        }
+        entry, _ = _rewrite(spec, tmp_path, stub_servers=frozenset({"srv"}), forward_env=True)
+        flags = expand_stub_flags(entry["mcpServers"]["srv"]["args"])
+        paths.append(flags[flags.index("--env-file") + 1])
+    assert paths[0] == paths[1]
+    assert json.loads(Path(paths[0]).read_text(encoding="utf-8")) == {"AUTH": "s3cr3t-token"}
+
+
+def test_two_agents_declaring_one_server_differently_get_their_own_sidecars(tmp_path: Path) -> None:
+    """Negative control for the test above: a declared difference still splits.
+
+    These two agents get different ``effective_env_hash`` values, so different
+    backends -- and the sidecar has to follow, or one would be handed the
+    other's environment."""
+    paths = []
+    for agent, token in (("gpu-dev", "one"), ("kirocrew", "two")):
+        spec = {
+            "name": agent,
+            "mcpServers": {"srv": {"command": sys.executable, "env": {"AUTH": token}}},
+        }
+        entry, _ = _rewrite(spec, tmp_path, stub_servers=frozenset({"srv"}), forward_env=True)
+        flags = expand_stub_flags(entry["mcpServers"]["srv"]["args"])
+        paths.append(flags[flags.index("--env-file") + 1])
+    assert paths[0] != paths[1]
 
 
 @pytest.mark.parametrize(

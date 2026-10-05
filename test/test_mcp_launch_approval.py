@@ -2228,7 +2228,6 @@ async def test_re_approving_a_running_server_keeps_its_declared_env_forwarded(
     key = type(key)(
         **{
             **{f: getattr(key, f) for f in inspect.signature(type(key)).parameters},
-            "agent_name": "a",
             "effective_env_hash": hash_effective_env(declared, identity_keys=identity_keys),
         }
     )
