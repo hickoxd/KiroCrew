@@ -1666,11 +1666,22 @@ def register_routes(app: web.Application) -> None:
         signal must not swallow the other.
         """
         try:
-            pr_watchers.get_registry().stop_all()
+            # Off the loop: ``stop_all`` only sets flags, but it takes the registry
+            # lock, and the orphan-clone sweep (``_delete_clone_if_unowned``) holds that
+            # same lock across a ``shutil.rmtree``. A disable landing mid-sweep would
+            # otherwise block the event loop — chat and heartbeat tasks included — until
+            # the delete finished. The ``get_registry()`` resolution rides inside the hop
+            # too, so first-call construction cannot run on the loop either.
+            await asyncio.to_thread(lambda: pr_watchers.get_registry().stop_all())
         except Exception:  # pragma: no cover - defensive
             logger.warning("%s: watcher stop on disable failed", store.APP_NAME, exc_info=True)
         try:
-            await asyncio.to_thread(runner.get_supervisor().stop)
+            # Resolve the supervisor INSIDE the hop as well: ``get_supervisor()``
+            # lazily constructs ``RunSupervisor`` on first call, and construction runs
+            # ``_hydrate_terminal_record`` → a synchronous ``store.read_json``. Resolving
+            # it on the loop would block chat/heartbeat on that storage read; the lambda
+            # keeps both the construction and the stop off-loop.
+            await asyncio.to_thread(lambda: runner.get_supervisor().stop())
         except Exception:  # pragma: no cover - defensive
             logger.warning("%s: run stop on disable failed", store.APP_NAME, exc_info=True)
 

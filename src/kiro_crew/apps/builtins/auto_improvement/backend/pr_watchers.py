@@ -333,6 +333,14 @@ class WatcherState:
     #: isolated clone's origin is dead by design, so in that state the directory is the
     #: ONLY copy of the work and must survive teardown (and the orphan sweep).
     unexported_work: bool = False
+    #: Exported-patch sequence base, carried across a disable→enable relaunch. A relaunch
+    #: installs a fresh state whose pass counter restarts at 1, but the durable patch is
+    #: named ``<fp>.nudge-<n>.diff`` on disk and the fingerprint is stable, so a plain
+    #: ``attempt`` would make the new pass 1 overwrite an earlier incarnation's pass 1 —
+    #: and that earlier clone is already gone, so its patch is the only copy. Seeding this
+    #: from the prior incarnation's pass count makes the on-disk sequence monotone per
+    #: fingerprint, so no relaunch ever reuses a patch name.
+    export_base: int = 0
     started_at: float = 0.0
     updated_at: float = 0.0
     #: Bounded newest-last ring the UI polls, plus a monotone total so an
@@ -551,7 +559,44 @@ class PRWatcherRegistry:
         with self._lock:
             existing = self._watchers.get(fp)
             if existing is not None:
-                return existing
+                # Relaunch ONLY a watcher a disable stood down: STATUS_STOPPED with
+                # no live thread. That is the single state ``stop_all`` creates, and
+                # it is the disable→enable gap — the stopped entry stays in
+                # ``_watchers``, so returning it would make ``reconcile_failing_prs``
+                # believe the PR is being driven while no thread runs, and it would
+                # sit undriven until a gateway restart. Any other terminal state
+                # (exhausted, ready, error) is left exactly as it is: those exits are
+                # the watcher's own decision, not an operator switching the app off,
+                # and relaunching them is out of this fix's scope.
+                #
+                # A stopped watcher that still holds UNEXPORTED work is also returned,
+                # never evicted: replacing it with a fresh ``WatcherState``
+                # (``unexported_work=False``) would let ``sweep_orphan_clones`` — or a
+                # fresh ``_ensure_clone`` — delete the kept clone that holds the only
+                # copy of that pass's commits. The clone's origin is dead, so that
+                # loss is unrecoverable. Keeping the entry preserves the clone; a
+                # relaunch only matters once the work is durable, by which point
+                # ``unexported_work`` is False again.
+                _thread = self._threads.get(fp)
+                relaunchable = (
+                    existing.status == STATUS_STOPPED
+                    and not existing.unexported_work
+                    and not (_thread is not None and _thread.is_alive())
+                )
+                if not relaunchable:
+                    return existing
+                # Carry the export sequence forward so the relaunched watcher's patches
+                # never reuse a name an earlier incarnation already wrote: its passes
+                # restart at 1, but ``_export_fix`` offsets by this base. ``export_base``
+                # itself accumulates, so a watcher stopped and relaunched repeatedly keeps
+                # advancing the on-disk sequence.
+                st.export_base = existing.export_base + existing.nudges
+                # Drop the stood-down entry's bookkeeping so the launch below starts a
+                # fresh thread. (``stop``/``_run_watcher`` also take the lock, so a
+                # thread that stops between checks only leaves its own stopped entry,
+                # which this clears.)
+                self._threads.pop(fp, None)
+                self._stop_flags.pop(fp, None)
             self._watchers[fp] = st
         if not is_watchable_pr(pr):
             # ``pr_recipe`` degrades to ``QUEUED:<fp>`` when it could not open a PR.
@@ -1159,7 +1204,7 @@ class PRWatcherRegistry:
         # `_export_fix` swallows its own errors, so presence of the artifact is the strongest
         # signal: if the patch is on disk the work IS saved.
         try:
-            if (store.pr_queue_dir() / f"{st.fp}.nudge-{attempt}.diff").exists():
+            if (store.pr_queue_dir() / f"{st.fp}.nudge-{st.export_base + attempt}.diff").exists():
                 return True
             # Otherwise the only safe conclusion is "this pass produced nothing", and that
             # requires the diff to have SUCCEEDED. `returncode` is checked because a FAILING
@@ -1217,7 +1262,7 @@ class PRWatcherRegistry:
             proc = _git("-C", clone, "diff", f"{self._base_rev(st)}...HEAD", timeout=60)
             if proc.returncode != 0 or not (proc.stdout or "").strip():
                 return
-            path = store.pr_queue_dir() / f"{st.fp}.nudge-{attempt}.diff"
+            path = store.pr_queue_dir() / f"{st.fp}.nudge-{st.export_base + attempt}.diff"
             path.write_text(proc.stdout, encoding="utf-8")
         except (OSError, subprocess.SubprocessError) as exc:
             self._log(st, "error", f"could not export the fix patch: {exc}")
