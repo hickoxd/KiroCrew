@@ -609,3 +609,55 @@ def test_benign_match_pattern_still_passes():
     src = "def f(p):\n    match p:\n        case complex(real=r, imag=i):\n            return r + i\n"
     ok, findings = validate_skill_script("run.py", src)
     assert ok is True, findings
+
+
+def test_rejects_builtins_bypass_via_bare_name():
+    """Block __builtins__ as a bare name to prevent .eval() bypass."""
+    for src in (
+        '__builtins__.eval("1+1")',
+        '__builtins__.exec("x=1")',
+        '__builtins__.compile("1", "<>", "eval")',
+        '__builtins__.__import__("os")',
+        'getattr(__builtins__, "eval")',
+        '__builtins__.__dict__["eval"]',
+    ):
+        ok, findings = validate_skill_script("run.py", src)
+        assert ok is False, f"Expected block for: {src}"
+        assert any("dangerous builtin name" in f for f in findings), (src, findings)
+
+
+def test_rejects_builtins_bypass_via_subscript():
+    """Block __builtins__ as string keys in subscripts."""
+    for src in (
+        'vars()["__builtins__"]',
+        'globals()["__builtins__"]',
+    ):
+        ok, findings = validate_skill_script("run.py", src)
+        assert ok is False, f"Expected block for: {src}"
+        assert any("dangerous subscript key" in f or "dangerous module lookup" in f for f in findings), (src, findings)
+
+
+def test_rejects_reflection_attributes():
+    """Block __self__, __subclasses__, __loader__, __spec__ etc."""
+    for src in (
+        'print.__self__.eval("1+1")',
+        '().__class__.__subclasses__()',
+        '__loader__.load_module("builtins")',
+        '__spec__.loader',
+    ):
+        ok, findings = validate_skill_script("run.py", src)
+        assert ok is False, f"Expected block for: {src}"
+        # Multiple possible blocking messages
+        assert len(findings) > 0, (src, findings)
+
+
+def test_allows_benign_compile_execute():
+    """Allow re.compile, cursor.execute, model.eval, df.eval - not every .compile/.execute/.eval is dangerous."""
+    for src in (
+        'import re; re.compile(r"\\d+")',
+        'cursor.execute("SELECT * FROM t")',
+        'model.eval()',
+        'df.eval("a + b")',
+    ):
+        ok, findings = validate_skill_script("run.py", src)
+        assert ok is True, f"Unexpected block for benign: {src} -> {findings}"
