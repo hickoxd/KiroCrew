@@ -1252,15 +1252,16 @@ class TestLinkedWorkspaceAncestorGate:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Ordering IS the property: the leaf predicate is wired to explode,
-        so a regression that lstats first fails loudly instead of silently."""
+        so a regression that lstats first fails loudly instead of silently. The
+        held screen reporting a link (``None``) refuses before any leaf lstat."""
         from kiro_crew import memory_files as memory_mod
 
         ms = _populated_store(tmp_path)
         self._windows(monkeypatch)
-        monkeypatch.setattr(memory_mod, "first_linked_ancestor", lambda _p: str(tmp_path))
+        monkeypatch.setattr(memory_mod, "screen_linked_chain_held", lambda _p: None)
 
         def _boom(_p: object) -> bool:  # pragma: no cover
-            raise AssertionError("leaf reparse check ran before the ancestor walk")
+            raise AssertionError("leaf reparse check ran before the held screen")
 
         monkeypatch.setattr(memory_mod, "is_link_or_junction", _boom)
         audits: list[tuple[str, str]] = []
@@ -1284,13 +1285,15 @@ class TestLinkedWorkspaceAncestorGate:
     def test_bypassing_the_guard_restores_the_read(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Mutation check: with the walk reporting no link, the same store
-        reads again -- the refusal above is attributable to the guard."""
+        """Mutation check: with the held screen admitting the workspace (returning
+        its canonical form), the same store reads again -- the refusal above is
+        attributable to the guard."""
         from kiro_crew import memory_files as memory_mod
 
         ms = _populated_store(tmp_path)
         self._windows(monkeypatch)
-        monkeypatch.setattr(memory_mod, "first_linked_ancestor", lambda _p: None)
+        monkeypatch.setattr(memory_mod, "screen_linked_chain_held", lambda p: str(p))
+        monkeypatch.setattr(memory_mod, "is_link_or_junction", lambda _p: False)
 
         snapshot = ms.markdown_snapshot()
 
@@ -1299,17 +1302,18 @@ class TestLinkedWorkspaceAncestorGate:
     def test_the_walk_is_not_consulted_on_posix(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """POSIX linked ancestors stay deliberately unrejected (a symlinked
+        """POSIX linked ANCESTORS stay deliberately unrejected (a symlinked
         /home is a legitimate setup and those components are not
-        agent-writable), so the walk must not even run there."""
+        agent-writable), so the held screen must not even run there. The
+        all-platform workspace LEAF check still refuses a symlinked workspace."""
         if os.name == "nt":
             pytest.skip("gate is active on Windows by design")
         from kiro_crew import memory_files as memory_mod
 
         def _boom(_p: object) -> None:  # pragma: no cover
-            raise AssertionError("ancestor walk ran on POSIX")
+            raise AssertionError("held screen ran on POSIX")
 
-        monkeypatch.setattr(memory_mod, "first_linked_ancestor", _boom)
+        monkeypatch.setattr(memory_mod, "screen_linked_chain_held", _boom)
         ms = _populated_store(tmp_path)
         assert "- prefers pytest" in ms.markdown_snapshot()["preferences"]["content"]
 

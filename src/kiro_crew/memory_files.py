@@ -50,9 +50,9 @@ from kiro_crew.hooks import (
     unc_probe_allowed,
 )
 from kiro_crew.memory_startup import require_memory_ready
-from kiro_crew.pinned_fs import fd_real_path
+from kiro_crew.pinned_fs import fd_real_path, screen_linked_chain_held
 from kiro_crew.platform.interfaces import MemoryEntry, MemoryRoots
-from kiro_crew.platform_compat import file_lock, first_linked_ancestor, is_link_or_junction
+from kiro_crew.platform_compat import file_lock, is_link_or_junction
 
 logger = logging.getLogger(__name__)
 
@@ -482,16 +482,26 @@ class LocalMemoryFiles:
         # assumes the operator-configured workspace is absolute (every
         # in-tree constructor passes one); a relative workspace would walk
         # only the components the path itself names.
-        if os.name == "nt" and first_linked_ancestor(self._roots.workspace) is not None:
+        #
+        # The ancestor screen and the workspace LEAF check share ONE hold:
+        # `screen_linked_chain_held` holds the workspace chain no-follow and
+        # refuses a link ANYWHERE in it (ancestor OR the workspace leaf), so a
+        # junction planted between the screen and the leaf checks or descendant
+        # reads cannot be traversed by them. The memory_dir / history_dir leaf
+        # checks stay below -- they are distinct roots, not part of the workspace
+        # chain. Reference wiring: pinned_fs.screen_linked_chain_held.
+        if os.name == "nt" and screen_linked_chain_held(str(self._roots.workspace)) is None:
             logger.warning("memory read refused (workspace ancestor is a link): %s", root)
             self._audit_read_refusal(
                 "workspace_linked_ancestor", root, "a workspace ancestor is a link"
             )
             return False
-        # The workspace leaf is checked FIRST among the lstat probes: a
-        # workspace swapped for a link/junction would make the two descendant
-        # checks below traverse it and validate paths inside the link's
-        # target instead of the admitted tree. lstat-based, so the link
+        # The memory_dir / history_dir / workspace LEAVES get the all-platform
+        # junction-aware check. The held screen above covers the Windows ANCESTOR
+        # window (and the workspace leaf under nt), but it is Windows-only -- on
+        # POSIX a symlinked workspace, memory root or history dir would otherwise
+        # make the descendant checks traverse it and validate paths inside the
+        # link's target instead of the admitted tree. lstat-based, so the link
         # itself is never followed.
         if (
             is_link_or_junction(self._roots.workspace)

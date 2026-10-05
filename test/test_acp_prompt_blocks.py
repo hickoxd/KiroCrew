@@ -116,8 +116,14 @@ class TestBuildPromptBlocks:
         # renamed): the emitted mimeType tracks the header-DETECTED format,
         # because the backend validates the bytes, not the file extension.
         pil = pytest.importorskip("PIL.Image")
-        fmt = {".png": "PNG", ".jpg": "JPEG", ".jpeg": "JPEG",
-               ".gif": "GIF", ".webp": "WEBP", ".bmp": "BMP"}[suffix]
+        fmt = {
+            ".png": "PNG",
+            ".jpg": "JPEG",
+            ".jpeg": "JPEG",
+            ".gif": "GIF",
+            ".webp": "WEBP",
+            ".bmp": "BMP",
+        }[suffix]
         p = tmp_path / f"img{suffix}"
         mode = "P" if fmt == "GIF" else "RGB"
         pil.new(mode, (2, 2)).save(p, format=fmt)
@@ -160,17 +166,24 @@ class TestBuildPromptBlocks:
         assert f"[image: {p.name}]" in blocks[0]["text"]
 
     def test_probe_oserror_is_treated_as_not_a_file(self, tmp_path, monkeypatch):
-        """Any OSError from the is_file() probe means "not a file", not a
-        failed turn -- the reference stays in the text."""
+        """A probe that cannot answer means "not a file", not a failed turn --
+        the reference stays in the text. On Windows the probe is the held screen
+        (``screen_held_file_kind`` -> None on an unverifiable hop); on POSIX it is
+        the by-name ``Path.is_file`` raising OSError. Exercise whichever arm this
+        runner takes."""
         p = _png(tmp_path)
-        real_is_file = Path.is_file
+        if os.name == "nt":
+            # The held screen returns None on the OSError/unverifiable hop.
+            monkeypatch.setattr(prompt_blocks, "screen_held_file_kind", lambda _p: None)
+        else:
+            real_is_file = Path.is_file
 
-        def flaky_is_file(self):
-            if self == p:
-                raise OSError(5, "I/O error", str(self))
-            return real_is_file(self)
+            def flaky_is_file(self):
+                if self == p:
+                    raise OSError(5, "I/O error", str(self))
+                return real_is_file(self)
 
-        monkeypatch.setattr(Path, "is_file", flaky_is_file)
+            monkeypatch.setattr(Path, "is_file", flaky_is_file)
         blocks = build_prompt_blocks(f"see {p}")
 
         assert [b["type"] for b in blocks] == ["text"]
@@ -351,7 +364,9 @@ class TestPlatformPathGrammar:
 
     def test_windows_pattern_ignores_urls(self):
         """``//`` acceptance must not make ``https://host/x.png`` a candidate."""
-        assert prompt_blocks._WINDOWS_PATH_RE.search("see https://example.com/docs/logo.png") is None
+        assert (
+            prompt_blocks._WINDOWS_PATH_RE.search("see https://example.com/docs/logo.png") is None
+        )
         assert prompt_blocks._WINDOWS_PATH_RE.search("see http://host/a.png here") is None
 
     def test_windows_pattern_requires_an_absolute_path(self):
@@ -381,9 +396,7 @@ class TestUncProbeGate:
         assert hooks.is_unc_shape(raw) is want
 
     def test_attacker_host_is_refused(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(
-            "kiro_crew.config.paths.peek_data_home", lambda: tmp_path / "home"
-        )
+        monkeypatch.setattr("kiro_crew.config.paths.peek_data_home", lambda: tmp_path / "home")
         assert hooks.unc_probe_allowed(r"\\evil\share\x.png") is False
         assert hooks.unc_probe_allowed("//evil/share/x.png") is False
 
@@ -393,12 +406,8 @@ class TestUncProbeGate:
             "kiro_crew.config.paths.peek_data_home",
             lambda: Path(r"\\fileserver\home\me\.kiro\crew"),
         )
-        allowed = hooks.unc_probe_allowed(
-            r"\\fileserver\home\me\.kiro\crew\uploads\shot.png"
-        )
-        forward = hooks.unc_probe_allowed(
-            "//fileserver/home/me/.kiro/crew/uploads/shot.png"
-        )
+        allowed = hooks.unc_probe_allowed(r"\\fileserver\home\me\.kiro\crew\uploads\shot.png")
+        forward = hooks.unc_probe_allowed("//fileserver/home/me/.kiro/crew/uploads/shot.png")
         # normcase/normpath only fold separators and case on Windows, so the
         # cross-separator equivalence holds there; on POSIX the gate is never
         # consulted (the probe loop is os.name == "nt" scoped).
@@ -1129,14 +1138,15 @@ class TestLinkedAncestorGate:
         monkeypatch.setattr(prompt_blocks, "os", types.SimpleNamespace(name="nt"))
 
     def test_linked_ancestor_candidate_is_refused_before_any_probe(self, tmp_path, monkeypatch):
-        """Ordering IS the property: the leaf probe is wired to explode, so a
-        regression that probes first fails loudly instead of silently."""
+        """Ordering IS the property: the by-name leaf probe is wired to explode, so a
+        regression that probes by name fails loudly instead of silently. The held
+        screen reporting a link (``None``) skips the candidate before any probe."""
         p = _png(tmp_path)
         self._windows(monkeypatch)
-        monkeypatch.setattr(prompt_blocks, "first_linked_ancestor", lambda _p: str(tmp_path))
+        monkeypatch.setattr(prompt_blocks, "screen_held_file_kind", lambda _p: None)
 
         def _boom(self):  # type: ignore[no-untyped-def]  # pragma: no cover
-            raise AssertionError("is_file ran before the ancestor walk")
+            raise AssertionError("is_file ran instead of the held-descriptor kind")
 
         monkeypatch.setattr(Path, "is_file", _boom)
         blocks = build_prompt_blocks(f"see {p}")
@@ -1146,12 +1156,19 @@ class TestLinkedAncestorGate:
         assert str(p) in blocks[0]["text"]
 
     def test_bypassing_the_guard_restores_the_probe(self, tmp_path, monkeypatch):
-        """Mutation check: with the walk reporting no link, the same candidate
-        is probed and inlined again -- so the refusal above is attributable to
-        the guard, not to some other screen."""
+        """Mutation check: with the held screen admitting the path (a regular-file
+        ScreenedFile under the size cap), the same candidate is inlined again -- so the
+        refusal above is attributable to the guard, not to some other screen."""
+        from kiro_crew.pinned_fs import ScreenedFile
+
         p = _png(tmp_path)
         self._windows(monkeypatch)
-        monkeypatch.setattr(prompt_blocks, "first_linked_ancestor", lambda _p: None)
+        size = p.stat().st_size
+        monkeypatch.setattr(
+            prompt_blocks,
+            "screen_held_file_kind",
+            lambda _p: ScreenedFile(str(p), True, True, False, size),
+        )
         blocks = build_prompt_blocks(f"see {p}")
         assert [b["type"] for b in blocks] == ["text", "image"]
 
@@ -1162,23 +1179,22 @@ class TestLinkedAncestorGate:
             pytest.skip("gate is active on Windows by design")
 
         def _boom(_p):  # pragma: no cover
-            raise AssertionError("ancestor walk ran on POSIX")
+            raise AssertionError("held screen ran on POSIX")
 
-        monkeypatch.setattr(prompt_blocks, "first_linked_ancestor", _boom)
+        monkeypatch.setattr(prompt_blocks, "screen_held_file_kind", _boom)
         p = _png(tmp_path)
         blocks = build_prompt_blocks(f"see {p}")
         assert [b["type"] for b in blocks] == ["text", "image"]
 
     def test_a_leaf_link_is_refused_before_the_probe(self, tmp_path, monkeypatch):
-        """The walk deliberately excludes the leaf, so the leaf gets its own
-        junction-aware check -- is_file() FOLLOWS a final-component link."""
+        """The held screen refuses a link ANYWHERE in the chain -- the LEAF as
+        well as any ancestor, so one ``None`` covers both in a single hold."""
         p = _png(tmp_path)
         self._windows(monkeypatch)
-        monkeypatch.setattr(prompt_blocks, "first_linked_ancestor", lambda _p: None)
-        monkeypatch.setattr(prompt_blocks, "is_link_or_junction", lambda _p: True)
+        monkeypatch.setattr(prompt_blocks, "screen_held_file_kind", lambda _p: None)
 
         def _boom(self):  # type: ignore[no-untyped-def]  # pragma: no cover
-            raise AssertionError("is_file ran before the leaf link check")
+            raise AssertionError("is_file ran before the held screen")
 
         monkeypatch.setattr(Path, "is_file", _boom)
         blocks = build_prompt_blocks(f"see {p}")
