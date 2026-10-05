@@ -40,6 +40,15 @@ vi.mock('../providers', () => ({
     fetchUsage: () => Promise.resolve(current),
   }),
 }))
+vi.mock('../api/client', () => ({
+  api: { usageSeries: vi.fn().mockResolvedValue({ by: 'surface', metric: 'credits', days: 0, dates: [], series: [], total: 0, rows: 0 }) },
+}))
+// The Usage tab's spend chart colours its layers from the session palette,
+// which reads the theme context; a fixed palette keeps these tests on the tab's
+// own behaviour.
+vi.mock('../hooks/useSessionPalette', () => ({
+  useSessionPalette: () => ({ paletteColors: ['#ff0000', '#00ff00', '#0000ff'] }),
+}))
 
 import UsageTab from '../pages/overview/UsageTab'
 

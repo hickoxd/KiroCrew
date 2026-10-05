@@ -29,6 +29,33 @@ export type WakaTimeStats = {
   }
 }
 
+/** Stacking dimensions and metrics `GET /api/usage/series` accepts. */
+export type UsageSeriesDimension = 'surface' | 'agent' | 'model' | 'cohort'
+export type UsageSeriesMetric = 'credits' | 'tokens'
+
+/** One stack layer: a per-day value for every entry of the payload's `dates`.
+ *  `kind` separates a real bucket from the two reserved layers (`other`, the
+ *  fold of everything past the top-N, which carries how many buckets it holds;
+ *  `unattributed`, rows whose dimension value was never recorded). */
+export type UsageSeriesLayer = {
+  key: string
+  kind: 'bucket' | 'other' | 'unattributed'
+  values: number[]
+  total: number
+  members?: number
+}
+
+/** Dense local-day axis plus layers in stack order, bottom first. */
+export type UsageSeriesPayload = {
+  by: UsageSeriesDimension
+  metric: UsageSeriesMetric
+  days: number
+  dates: string[]
+  series: UsageSeriesLayer[]
+  total: number
+  rows: number
+}
+
 export function createTelemetryEndpoints({ get, post, j }: ClientTransport) {
   const usageReadouts = {
     /** The five session folds of a crew log, keyed by name, in ONE request.
@@ -93,6 +120,12 @@ export function createTelemetryEndpoints({ get, post, j }: ClientTransport) {
      *  every row (the endpoint's app-ownership filter applies to app callers). */
     usageTurns: (slot: string) =>
       fetch('/api/usage/turns?slot=' + encodeURIComponent(slot)).then(j),
+    /** The Usage tab's stacked spend-over-time series. Whole-install spend by one
+     *  dimension; the same always-written row store as `usageTurns`, with no
+     *  slot filter, which is why the route refuses app tokens. */
+    usageSeries: (by: UsageSeriesDimension, metric: UsageSeriesMetric) =>
+      get(`/api/usage/series?by=${encodeURIComponent(by)}&metric=${encodeURIComponent(metric)}`)
+        .then(j) as Promise<UsageSeriesPayload>,
     /** WakaTime coding stats for a named range. Returns { configured: false }
      *  when the integration is off; a 502 body carries { code: 'upstream_unavailable' }. */
     wakatimeStats: (range: string) =>

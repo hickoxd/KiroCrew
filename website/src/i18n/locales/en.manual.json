@@ -6229,7 +6229,8 @@
         "credits": "Credits",
         "spend": "Spend",
         "tokens": "Tokens",
-        "usage_tracking_is_not_available_for": "Usage tracking is not available for {{provider}}."
+        "usage_tracking_is_not_available_for": "Usage tracking is not available for {{provider}}.",
+        "spend_over_time": "Spend over time"
       },
       "vectorMemoryCard": {
         "embedding_status": "Embedding status",
@@ -6399,6 +6400,23 @@
         "err_name_reserved": "“{{name}}” is reserved for a built-in agent. Pick another name.",
         "err_generic": "The request failed. Try again.",
         "chat_with_caption": "Chat runs on the shared default memory — not a crewmate's own."
+      },
+      "usageSeriesChart": {
+        "layer_by": "Layer by",
+        "by_surface": "Surface",
+        "by_agent": "Agent",
+        "by_model": "Model",
+        "by_cohort": "Session start week",
+        "cumulative": "Cumulative",
+        "other": "Other ({{n}} more)",
+        "unattributed": "Unattributed",
+        "unattributed_hint": "Rows recorded before Crew tracked this field.",
+        "cohort_week": "First seen week of {{date}}",
+        "cohort_caption": "Each layer is the spend of the sessions first seen in that week. A thick older layer means long-running sessions are still spending.",
+        "total_to_date": "Total to date: {{value}}",
+        "total_that_day": "That day: {{value}}",
+        "empty": "No spend recorded yet.",
+        "aria_label": "Stacked area chart of spend over time"
       }
     },
     "overviewPage": {

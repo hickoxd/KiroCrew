@@ -1,11 +1,12 @@
 import { Fragment } from 'react'
-import { BarChart3 } from 'lucide-react'
+import { BarChart3, ChartArea } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { Card, CardTitle, Badge } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import { useProvider } from '../../providers'
 import { providerUsageQuery } from '../../api/providerUsageQuery'
 import { TokenDailyChart } from './TokenDailyChart'
+import { TokenStackedAreaChart } from './TokenStackedAreaChart'
 import { formatCost } from '../../utils/formatCost'
 
 import { fmtNumber, fmtPercent } from '../../i18n/format'
@@ -103,6 +104,15 @@ export default function UsageTab() {
           />
         </Card>
       )}
+
+      {/* Whole-install spend by surface / agent / model / session cohort, from
+          the per-turn shards -- the Daily History credits below, decomposed.
+          It fetches its own series, so it renders beside the usage report
+          regardless of what the provider's report carries. */}
+      <Card>
+        <CardTitle><ChartArea className="lucide-inline" /> {i18nT('pages.overview.usageTab.spend_over_time')}</CardTitle>
+        <TokenStackedAreaChart />
+      </Card>
 
       <Card>
         <CardTitle><BarChart3 className="lucide-inline" /> {i18nT('pages.overview.usageTab.session_activity_30_days')}</CardTitle>

@@ -13981,7 +13981,8 @@
         "total_sessions_30d": "Totale sessioni (30 gg)",
         "total_tokens": "Totale token",
         "total_turns": "Totale turni",
-        "usage_tracking_is_not_available_for": "Il monitoraggio dell’utilizzo non è disponibile per {{provider}}."
+        "usage_tracking_is_not_available_for": "Il monitoraggio dell’utilizzo non è disponibile per {{provider}}.",
+        "spend_over_time": "Spesa nel tempo"
       },
       "vectorMemoryCard": {
         "legacy_vectors_warning": "Questi vettori precedono la registrazione del file del modello. Se hai modificato il file, riapplicalo nelle impostazioni del modello di embedding per ricostruirli.",
@@ -14257,6 +14258,23 @@
         "err_name_reserved": "“{{name}}” è riservato a un agente integrato. Scegli un altro nome.",
         "err_generic": "La richiesta non è riuscita. Riprova.",
         "chat_with_caption": "La chat usa la memoria predefinita condivisa, non quella di un compagno."
+      },
+      "usageSeriesChart": {
+        "layer_by": "Suddividi per",
+        "by_surface": "Superficie",
+        "by_agent": "Agente",
+        "by_model": "Modello",
+        "by_cohort": "Settimana di inizio sessione",
+        "cumulative": "Cumulativo",
+        "other": "Altro ({{n}} in più)",
+        "unattributed": "Non attribuito",
+        "unattributed_hint": "Righe registrate prima che Crew tracciasse questo campo.",
+        "cohort_week": "Viste per la prima volta nella settimana del {{date}}",
+        "cohort_caption": "Ogni strato è la spesa delle sessioni viste per la prima volta in quella settimana. Uno strato vecchio e spesso indica che sessioni di lunga durata stanno ancora spendendo.",
+        "total_to_date": "Totale a oggi: {{value}}",
+        "total_that_day": "Quel giorno: {{value}}",
+        "empty": "Nessuna spesa registrata finora.",
+        "aria_label": "Grafico ad aree impilate della spesa nel tempo"
       }
     },
     "overviewPage": {

@@ -58,6 +58,34 @@ refresh can recover without clearing the report. A provider without usage
 support shows neutral status text, not an error. No report is persisted to disk,
 and the top-bar credit readout keeps its separate billing refresh policy.
 
+The Usage tab's "Spend over time" card is a stacked area chart with one layer
+per bucket of the chosen dimension, backed by `GET /api/usage/series`
+(`dashboard/handlers/usage_series.py`). The route reads the same per-turn
+shards as the Daily History credits, admits rows by the same guard (a `tokens`
+row with a parseable local day), and answers a dense local-day axis -- every
+day of the window, zero-filled -- plus one series per bucket of the requested
+dimension: `by=surface` (the dispatch origin, the default), `agent`, `model`,
+or `cohort`, the ISO week in which the row's session was first seen inside the
+window, keyed by that week's Monday. `metric=credits` (default) or `tokens`
+(the four token fields summed; the kiro-cli backend reports them as zero, so
+the chart requests credits only and exposes no metric control). `top` (default 7, the
+session palette's hue count; ceiling 20) keeps that many buckets by window
+total and folds the rest into one `other` series carrying its member count; a
+row whose dimension value is empty or absent lands in an explicit
+`unattributed` series rather than being guessed at or dropped, so the stack's
+top edge always equals the day's total spend. Series arrive in stack order,
+bottom first: value dimensions largest-first, cohorts oldest-first, then
+`other`, then `unattributed`; `days` clamps to the shard retention window, an
+unknown `by` or `metric` is a 400 (`invalid_dimension` / `invalid_metric`)
+rather than a silent substitution, and an app token is answered 404 -- the
+payload is the whole install's spend with no slot filter, unlike the
+row-isolated `/api/usage/turns`. The parsed rows are cached on the shard
+fingerprint the other readers use, so switching dimension or metric
+re-aggregates in memory. The chart stacks and, in its default cumulative view,
+prefix-sums the series client-side (`pages/overview/TokenStackedAreaChart.tsx`,
+`d3`'s `stack`/`area`); its view choices persist in browser storage; the top-N buckets
+take the session palette's hues and `other` / `unattributed` the muted tokens.
+
 ## Gateway restart
 
 The dashboard restart endpoint and successful update applies share

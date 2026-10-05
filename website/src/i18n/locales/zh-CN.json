@@ -13567,7 +13567,8 @@
         "total_sessions_30d": "会话总数（30 天）",
         "total_tokens": "令牌总数",
         "total_turns": "总轮次",
-        "usage_tracking_is_not_available_for": "{{provider}} 不支持用量跟踪。"
+        "usage_tracking_is_not_available_for": "{{provider}} 不支持用量跟踪。",
+        "spend_over_time": "支出走势"
       },
       "vectorMemoryCard": {
         "legacy_vectors_warning": "这些向量生成时尚未记录模型文件。如果你更换过该文件，请在嵌入模型设置中重新应用，以重建向量。",
@@ -13821,6 +13822,23 @@
         "err_name_reserved": "“{{name}}”是内置智能体的保留名称。请换一个名字。",
         "err_generic": "请求失败，请重试。",
         "chat_with_caption": "聊天使用共享的默认记忆，而不是某个队友自己的记忆。"
+      },
+      "usageSeriesChart": {
+        "layer_by": "分层依据",
+        "by_surface": "来源",
+        "by_agent": "代理",
+        "by_model": "模型",
+        "by_cohort": "会话开始周",
+        "cumulative": "累计",
+        "other": "其他（另 {{n}} 项）",
+        "unattributed": "未归类",
+        "unattributed_hint": "在 Crew 开始跟踪此字段之前记录的行。",
+        "cohort_week": "{{date}}当周首次出现",
+        "cohort_caption": "每一层是该周首次出现的会话的支出。较旧的层很厚，说明长期运行的会话仍在产生支出。",
+        "total_to_date": "截至当日合计：{{value}}",
+        "total_that_day": "当日：{{value}}",
+        "empty": "尚未记录任何支出。",
+        "aria_label": "支出走势堆叠面积图"
       }
     },
     "overviewPage": {

@@ -13981,7 +13981,8 @@
         "total_sessions_30d": "Sessions totales (30 j)",
         "total_tokens": "Total des tokens",
         "total_turns": "Total des tours",
-        "usage_tracking_is_not_available_for": "Le suivi de l’utilisation n’est pas disponible pour {{provider}}."
+        "usage_tracking_is_not_available_for": "Le suivi de l’utilisation n’est pas disponible pour {{provider}}.",
+        "spend_over_time": "Dépenses dans le temps"
       },
       "vectorMemoryCard": {
         "legacy_vectors_warning": "Ces vecteurs datent d’avant l’enregistrement de leur fichier de modèle. Si vous avez changé ce fichier, réappliquez-le dans les paramètres du modèle de plongement pour les reconstruire.",
@@ -14257,6 +14258,23 @@
         "err_name_reserved": "« {{name}} » est réservé à un agent intégré. Choisis un autre nom.",
         "err_generic": "La requête a échoué. Réessaie.",
         "chat_with_caption": "La discussion utilise la mémoire partagée par défaut, pas celle d’un coéquipier."
+      },
+      "usageSeriesChart": {
+        "layer_by": "Répartir par",
+        "by_surface": "Surface",
+        "by_agent": "Agent",
+        "by_model": "Modèle",
+        "by_cohort": "Semaine de début de session",
+        "cumulative": "Cumulé",
+        "other": "Autres ({{n}} de plus)",
+        "unattributed": "Non attribué",
+        "unattributed_hint": "Lignes enregistrées avant que Crew ne suive ce champ.",
+        "cohort_week": "Vues pour la première fois la semaine du {{date}}",
+        "cohort_caption": "Chaque couche représente les dépenses des sessions vues pour la première fois cette semaine-là. Une couche ancienne épaisse signifie que des sessions de longue durée dépensent encore.",
+        "total_to_date": "Total à date : {{value}}",
+        "total_that_day": "Ce jour-là : {{value}}",
+        "empty": "Aucune dépense enregistrée pour l'instant.",
+        "aria_label": "Graphique en aires empilées des dépenses dans le temps"
       }
     },
     "overviewPage": {

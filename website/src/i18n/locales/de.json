@@ -13774,7 +13774,8 @@
         "total_sessions_30d": "Sitzungen insgesamt (30 T)",
         "total_tokens": "Tokens insgesamt",
         "total_turns": "Züge insgesamt",
-        "usage_tracking_is_not_available_for": "Nutzungserfassung ist für {{provider}} nicht verfügbar."
+        "usage_tracking_is_not_available_for": "Nutzungserfassung ist für {{provider}} nicht verfügbar.",
+        "spend_over_time": "Ausgaben im Zeitverlauf"
       },
       "vectorMemoryCard": {
         "legacy_vectors_warning": "Diese Vektoren entstanden vor der Erfassung ihrer Modelldatei. Wenn Sie diese Datei geändert haben, wenden Sie sie in den Einstellungen des Einbettungsmodells erneut an, um die Vektoren neu zu erstellen.",
@@ -14039,6 +14040,23 @@
         "err_name_reserved": "„{{name}}“ ist für einen integrierten Agenten reserviert. Wähle einen anderen Namen.",
         "err_generic": "Die Anfrage ist fehlgeschlagen. Bitte erneut versuchen.",
         "chat_with_caption": "Der Chat läuft mit dem geteilten Standard-Gedächtnis – nicht mit dem eines Crew-Kameraden."
+      },
+      "usageSeriesChart": {
+        "layer_by": "Aufteilen nach",
+        "by_surface": "Oberfläche",
+        "by_agent": "Agent",
+        "by_model": "Modell",
+        "by_cohort": "Startwoche der Sitzung",
+        "cumulative": "Kumuliert",
+        "other": "Sonstige ({{n}} weitere)",
+        "unattributed": "Nicht zugeordnet",
+        "unattributed_hint": "Einträge, die aufgezeichnet wurden, bevor Crew dieses Feld erfasst hat.",
+        "cohort_week": "Erstmals gesehen in der Woche vom {{date}}",
+        "cohort_caption": "Jede Schicht zeigt die Ausgaben der Sitzungen, die in dieser Woche erstmals gesehen wurden. Eine dicke ältere Schicht bedeutet, dass lang laufende Sitzungen weiterhin Ausgaben verursachen.",
+        "total_to_date": "Summe bis dahin: {{value}}",
+        "total_that_day": "An diesem Tag: {{value}}",
+        "empty": "Noch keine Ausgaben erfasst.",
+        "aria_label": "Gestapeltes Flächendiagramm der Ausgaben im Zeitverlauf"
       }
     },
     "overviewPage": {

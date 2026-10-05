@@ -13981,7 +13981,8 @@
         "total_sessions_30d": "Total de sessões (30d)",
         "total_tokens": "Total de tokens",
         "total_turns": "Total de turnos",
-        "usage_tracking_is_not_available_for": "O acompanhamento de uso não está disponível para {{provider}}."
+        "usage_tracking_is_not_available_for": "O acompanhamento de uso não está disponível para {{provider}}.",
+        "spend_over_time": "Gasto ao longo do tempo"
       },
       "vectorMemoryCard": {
         "legacy_vectors_warning": "Estes vetores foram criados antes do registro do arquivo do modelo. Se você alterou esse arquivo, aplique-o novamente nas configurações do modelo de embeddings para reconstruí-los.",
@@ -14257,6 +14258,23 @@
         "err_name_reserved": "“{{name}}” está reservado para um agente integrado. Escolha outro nome.",
         "err_generic": "A solicitação falhou. Tente novamente.",
         "chat_with_caption": "O chat usa a memória padrão compartilhada, não a de um colega."
+      },
+      "usageSeriesChart": {
+        "layer_by": "Dividir por",
+        "by_surface": "Superfície",
+        "by_agent": "Agente",
+        "by_model": "Modelo",
+        "by_cohort": "Semana de início da sessão",
+        "cumulative": "Acumulado",
+        "other": "Outros ({{n}} a mais)",
+        "unattributed": "Sem atribuição",
+        "unattributed_hint": "Linhas registradas antes de o Crew rastrear este campo.",
+        "cohort_week": "Vistas pela primeira vez na semana de {{date}}",
+        "cohort_caption": "Cada camada é o gasto das sessões vistas pela primeira vez naquela semana. Uma camada antiga e espessa significa que sessões de longa duração ainda estão gastando.",
+        "total_to_date": "Total até a data: {{value}}",
+        "total_that_day": "Nesse dia: {{value}}",
+        "empty": "Nenhum gasto registrado ainda.",
+        "aria_label": "Gráfico de áreas empilhadas do gasto ao longo do tempo"
       }
     },
     "overviewPage": {
