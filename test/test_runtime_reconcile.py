@@ -77,6 +77,18 @@ from kiro_crew import runtime_reconcile as rr
 # because the predecessor's teardown is the wipe that matters.
 pytestmark = pytest.mark.keep_runtime_ownership_tables
 
+#: Cgroup members the scope-reaper tests fabricate, above 2**32 so no platform can
+#: allocate one. ``session_scope_reap._reclaim_scope`` drops ``os.getpid()`` from a
+#: scope's members and its signal ladder skips it again, so a literal the OS can
+#: issue leaves the scope whenever it is this xdist worker's own pid: Windows
+#: runners issued 7272 and 8484 to workers that ran these tests. One pair per test,
+#: so a barrier or claim one test strands cannot reach another.
+_MEMBER_A, _MEMBER_B = 99_999_999_971, 99_999_999_972
+_UNCLAIMED, _TENANTED = 99_999_999_973, 99_999_999_974
+_EARLY, _LATE = 99_999_999_975, 99_999_999_976
+_CLEARED_A, _CLEARED_B = 99_999_999_977, 99_999_999_978
+_PLAIN_A, _PLAIN_B = 99_999_999_979, 99_999_999_980
+
 # ── the reconciler core ───────────────────────────────────────────────────────
 
 
@@ -2046,7 +2058,7 @@ async def test_the_scope_reaper_does_not_stop_a_unit_holding_a_leased_pid(
     ro._reset_for_tests()
     scope = tmp_path / "run-test.scope"
     scope.mkdir()
-    (scope / "cgroup.procs").write_text("7171\n7272\n", encoding="utf-8")
+    (scope / "cgroup.procs").write_text(f"{_MEMBER_A}\n{_MEMBER_B}\n", encoding="utf-8")
 
     stopped: list[str] = []
     signalled: list[tuple[int, int]] = []
@@ -2064,7 +2076,7 @@ async def test_the_scope_reaper_does_not_stop_a_unit_holding_a_leased_pid(
         return True, ""
 
     refusals: list[str] = []
-    holder = _LeaseHolder(7171)
+    holder = _LeaseHolder(_MEMBER_A)
     await holder.take()
     real_gate = reap.authorize_runtime_kill
     try:
@@ -2108,7 +2120,7 @@ def test_the_scope_reaper_signals_every_member_when_none_is_leased(tmp_path: Pat
     ro._reset_for_tests()
     scope = tmp_path / "run-plain.scope"
     scope.mkdir()
-    (scope / "cgroup.procs").write_text("7171\n7272\n", encoding="utf-8")
+    (scope / "cgroup.procs").write_text(f"{_PLAIN_A}\n{_PLAIN_B}\n", encoding="utf-8")
     signalled: list[int] = []
     reap._reclaim_scope(
         scope,
@@ -2118,7 +2130,7 @@ def test_the_scope_reaper_signals_every_member_when_none_is_leased(tmp_path: Pat
         signal_owned=lambda pid, *_rest: (signalled.append(pid) or (True, "")),
         sleep=lambda secs: None,
     )
-    assert set(signalled) == {7171, 7272}
+    assert set(signalled) == {_PLAIN_A, _PLAIN_B}
 
 
 def test_the_slice_enumerator_reads_every_scope_under_the_slice(
@@ -3221,7 +3233,7 @@ async def test_the_scope_reaper_does_not_stop_a_unit_holding_a_tenanted_pid(
     # reject the same input and neither pins the other. Ordered this way, the
     # survey's own answer is observable: it refuses before ANY barrier is taken,
     # where the barrier path would have committed and released the first member.
-    (scope / "cgroup.procs").write_text("8282\n8181\n", encoding="utf-8")
+    (scope / "cgroup.procs").write_text(f"{_UNCLAIMED}\n{_TENANTED}\n", encoding="utf-8")
 
     stopped: list[str] = []
     signalled: list[tuple[int, int]] = []
@@ -3240,9 +3252,9 @@ async def test_the_scope_reaper_does_not_stop_a_unit_holding_a_tenanted_pid(
         return True, ""
 
     # A tenancy and no lease -- the state the mechanism exists for.
-    claim = ro.claim_runtime_tenancy(8181, holder="a shared sub-agent turn")
+    claim = ro.claim_runtime_tenancy(_TENANTED, holder="a shared sub-agent turn")
     assert claim is not None, "precondition: the tenancy was taken"
-    assert ro.outstanding_leases(8181) == 0, "precondition: and no lease is held"
+    assert ro.outstanding_leases(_TENANTED) == 0, "precondition: and no lease is held"
     real_commit = reap.commit_runtime_teardown
     try:
         monkey = patch.object(
@@ -3293,7 +3305,7 @@ async def test_a_tenant_arriving_after_the_survey_abandons_the_whole_reclaim(
     ro._reset_for_tests()
     scope = tmp_path / "run-late.scope"
     scope.mkdir()
-    (scope / "cgroup.procs").write_text("8383\n8484\n", encoding="utf-8")
+    (scope / "cgroup.procs").write_text(f"{_EARLY}\n{_LATE}\n", encoding="utf-8")
 
     stopped: list[str] = []
     refusals: list[str] = []
@@ -3302,7 +3314,7 @@ async def test_a_tenant_arriving_after_the_survey_abandons_the_whole_reclaim(
 
     def _late_tenant(pid: int, epoch: int) -> bool:
         # The second member is claimed between the survey and its own commit.
-        return pid != 8484
+        return pid != _LATE
 
     with (
         patch.object(reap, "commit_runtime_teardown", _late_tenant),
@@ -3325,7 +3337,7 @@ async def test_a_tenant_arriving_after_the_survey_abandons_the_whole_reclaim(
     assert stopped == [], "one member gaining a tenant abandons the whole reclaim"
     assert cleared is False
     assert refusals == ["still leased"]
-    assert released == [8383], (
+    assert released == [_EARLY], (
         "and the barrier already taken is released, or that pid can never be claimed "
         f"again; {released}"
     )
@@ -3347,7 +3359,7 @@ def test_the_scope_reaper_releases_every_barrier_after_a_successful_stop(
     scope = tmp_path / "run-clear.scope"
     scope.mkdir()
     procs = scope / "cgroup.procs"
-    procs.write_text("8585\n8686\n", encoding="utf-8")
+    procs.write_text(f"{_CLEARED_A}\n{_CLEARED_B}\n", encoding="utf-8")
 
     released: list[int] = []
     real_release = reap.release_runtime_teardown
@@ -3371,11 +3383,12 @@ def test_the_scope_reaper_releases_every_barrier_after_a_successful_stop(
         )
 
     assert cleared is True
-    assert sorted(released) == [8585, 8686], f"every barrier taken is dropped; {released}"
+    expected = [_CLEARED_A, _CLEARED_B]
+    assert sorted(released) == expected, f"every barrier taken is dropped; {released}"
     # Released in a finally: the table is a process-wide singleton, and an int target
     # has no liveness probe, so a discarded handle stays live for the worker's whole
     # life and refuses every later barrier on this pid -- in this file and in others.
-    proof = ro.claim_runtime_tenancy(8585, holder="a later turn")
+    proof = ro.claim_runtime_tenancy(_CLEARED_A, holder="a later turn")
     try:
         assert proof is not None, "and the pid can be claimed again afterwards"
     finally:
@@ -4015,8 +4028,8 @@ def test_every_tenancy_claim_in_this_file_is_bound_and_released() -> None:
     a claim whose handle is discarded stays live for the worker's whole life, and every
     later barrier on that pid refuses. Nothing resets the singleton between files;
     only the explicit ``ro._reset_for_tests()`` calls do. The failure is silent where it
-    is caused and surfaces as an order-dependent failure somewhere else -- pid 8585 is
-    also the subject of ``test_cron_reaper.py``, which never resets the table.
+    is caused and surfaces as an order-dependent failure somewhere else -- a literal pid
+    shared with ``test_cron_reaper.py``, which never resets the table, inherits the claim there.
 
     A source scan rather than a runtime check, because the leak is invisible at
     runtime: the claim succeeds, the test passes, and the damage lands elsewhere.
@@ -4063,7 +4076,7 @@ async def test_the_tenancy_table_is_empty_for_this_files_pids_at_the_end() -> No
     is bound and released in the text, and this proves the table those calls act on is
     the real one and is clean when the file finishes.
     """
-    for pid in (8181, 8585, 5811, 424242):
+    for pid in (_TENANTED, _CLEARED_A, 5811, 424242):
         assert ro.RUNTIME_TENANCY.claims_on_pid(pid) == 0, (
             f"pid {pid} still carries a claim from an earlier test in this file, which "
             "refuses every later barrier on it"

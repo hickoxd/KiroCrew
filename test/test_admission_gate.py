@@ -96,6 +96,23 @@ async def _wait_for(predicate, timeout=5.0, interval=0.05, message="predicate"):
         await asyncio.sleep(interval)
 
 
+async def _retire_real_timer(svc: CronService) -> None:
+    """Make the test's own ``await svc._on_timer()`` calls the only ticks.
+
+    ``start()``, every ``add_job`` and every run completion arm a REAL ``_tick``.
+    With a cron-expression job its delay is the next minute boundary (capped at the
+    30 s poll), so a test that starts just before a boundary gets a real tick after
+    its ``patch(...)`` window has closed, and that tick dispatches on the host's real
+    admission verdict. Call it before the first ``add_job``.
+    """
+    svc._arm_timer = lambda: None  # type: ignore[method-assign]
+    task, svc._timer_task = svc._timer_task, None
+    if task is not None:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
 # ── admission_check ──────────────────────────────────────────────────────────
 
 
@@ -1617,10 +1634,14 @@ class TestCachedAdmissionCheck:
         rs._cached_at = time.monotonic()
         probes: list[int] = []
         monkeypatch.setattr(rs, "admission_check", lambda cfg=None: probes.append(1))
+        # The module's own binding: a refresh is a thread the call would construct
+        # here, so "none was started" is read off the call, not off a sleep.
+        threads = MagicMock()
+        monkeypatch.setattr(rs, "threading", SimpleNamespace(Thread=threads))
         try:
             assert rs.cached_admission_check() is verdict
-            time.sleep(0.05)
-            assert probes == []  # fresh cache => no background refresh either
+            threads.assert_not_called()  # fresh cache => no background refresh either
+            assert probes == []
         finally:
             self._reset()
 
@@ -1649,12 +1670,17 @@ class TestCronExprPassthrough:
         job = svc._jobs[0]
         job.last_run_ts = time.time() - 120
 
+        manual: list[Any] = []
+
         def claiming_check(cfg: object | None = None):
-            svc._claim_run(job.id, "manual")  # simulate a manual run claiming it
+            manual.append(svc._claim_run(job.id, "manual"))  # a manual run claims it
             return _admitted()
 
         with patch("kiro_crew.cron.admission_check", side_effect=claiming_check):
             await svc._on_timer()
+        # The scan claims what it dispatches before it returns, so a duplicate
+        # would already have replaced the manual claim.
+        assert svc._claims.get(job.id) is manual[0], "a duplicate run claimed the job"
         assert executed == []  # revalidated away, no duplicate
         svc._claims.pop(job.id, None)
         await svc.stop()
@@ -1684,7 +1710,9 @@ class TestCronExprPassthrough:
 
         with patch("kiro_crew.cron.admission_check", side_effect=completing_check):
             await svc._on_timer()
-        await asyncio.sleep(0.05)
+        # The scan claims what it dispatches before it returns, and a run releases
+        # its claim only after its callback ran: one of the two shows a re-fire.
+        assert job.id not in svc._claims, "the tick dispatched the completed job"
         assert executed == []  # not re-fired against the stale snapshot
         await svc.stop()
 
@@ -1725,6 +1753,7 @@ class TestCronExprPassthrough:
 
         svc = CronService(base_dir=tmp_path, on_job=callback)
         await svc.start()
+        await _retire_real_timer(svc)
         svc.add_job("expr-job", "msg", cron_expr="* * * * *")
 
         with (
@@ -1746,6 +1775,9 @@ class TestCronExprPassthrough:
 
         svc = CronService(base_dir=tmp_path, on_job=callback)
         await svc.start()
+        # add_job("expr") arms a real tick for the next minute boundary; one that
+        # lands after the patch window below runs on the host's real verdict.
+        await _retire_real_timer(svc)
         svc.add_job("interval", "msg", every_secs=60)
         svc.add_job("expr", "msg", cron_expr="* * * * *")
         interval_job = next(j for j in svc._jobs if j.name == "interval")
@@ -1756,6 +1788,8 @@ class TestCronExprPassthrough:
             patch("kiro_crew.cron.cron_expr_matches", return_value=True),
         ):
             await svc._on_timer()
+        # The tick claims what it dispatches before it returns.
+        assert interval_job.id not in svc._claims, "the interval job was dispatched"
         await _wait_for(lambda: "expr" in executed)
         assert executed == ["expr"]  # interval deferred, not fired
         assert interval_job.last_status is None  # untouched: still due
@@ -1908,17 +1942,20 @@ class TestCronExprPassthrough:
 
         with patch("kiro_crew.cron.admission_check", return_value=_admitted()):
             await svc._on_timer()
-        await asyncio.sleep(0.1)
+        # The recovery tick claims what it dispatches before it returns.
+        assert job.id not in svc._claims, "the recovery tick replayed the job"
         assert executed == ["interval"]  # no replay
         await svc.stop()
 
     def test_refresh_thread_start_failure_fails_open(self, monkeypatch) -> None:
         rs._cached_decision = None
         rs._cached_at = 0.0
+        # The module's own binding, not the stdlib class every thread in the
+        # worker constructs through.
         monkeypatch.setattr(
-            rs.threading,
-            "Thread",
-            MagicMock(side_effect=RuntimeError("can't start new thread")),
+            rs,
+            "threading",
+            SimpleNamespace(Thread=MagicMock(side_effect=RuntimeError("can't start new thread"))),
         )
         verdict = rs.cached_admission_check()  # must not raise
         assert verdict.admitted  # fail-open
