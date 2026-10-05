@@ -3132,6 +3132,15 @@ function ChatSidebar({
   const [activeDrag, setActiveDrag] = useState<{ type: string; id: string } | null>(null)
   // Its native counterpart: the board card in flight, which no DndContext sees.
   const { nativeSessionDrag, startNativeSessionDrag, endNativeSessionDrag } = useNativeSessionDrag()
+  // The derived lane a session card hovers right now. Such a lane refuses the
+  // drop, and its header's hover title is out of sight mid-drag, so the lane
+  // says why in a visible line instead. It shows only while `nativeSessionDrag`
+  // is set, so the card drag's own end hides it; a new drag starts it clean.
+  const [derivedHintCol, setDerivedHintCol] = useState<string | null>(null)
+  const startBoardCardDrag = useCallback((key: string) => {
+    setDerivedHintCol(null)
+    startNativeSessionDrag(key)
+  }, [startNativeSessionDrag])
   const {
     reorderFolders, moveFolderTo,
   } = useFolderDropOps({ folderReorderable, queryClient, setFolderActionError, updateFolderMutation })
@@ -3523,7 +3532,7 @@ function ChatSidebar({
         dragInFlight={!!activeDrag}
         activeDraggedKey={activeDrag?.type === 'session' ? activeDrag.id : null}
         activeDraggedPinnedIndex={activeDrag?.type === 'session' ? (pinnedRank.get(activeDrag.id) ?? -1) : -1}
-        onNativeDragStart={startNativeSessionDrag}
+        onNativeDragStart={startBoardCardDrag}
         onNativeDragEnd={endNativeSessionDrag}
         // `pinnedRank` is a local-pin ordering, so a peer row reports -1 (outside
         // the pinned band) and refuses keyboard reorder — the same stance as its
@@ -6094,11 +6103,21 @@ function ChatSidebar({
                 // card drop); mouse-only drag handlers, so scope-disable the rule.
                 // eslint-disable-next-line jsx-a11y/no-static-element-interactions
                 <div key={col.id} data-testid={`column-${col.id}`} className="flex flex-col flex-1 min-w-0 bg-card border border-border rounded-md overflow-hidden" style={{ minWidth: orderedColumns.length > 1 ? '220px' : undefined }}
+                  // Clear first, on the way down: a folder block or unfile strip
+                  // inside the lane takes the card and stops the dragover, so only
+                  // a dragover that reaches the lane itself shows the hint again.
+                  onDragOverCapture={laneDef ? () => setDerivedHintCol(c => (c === col.id ? null : c)) : undefined}
                   onDragOver={e => {
                     const types = e.dataTransfer.types
                     // Accept column reorder on the entire column surface
                     if (types.includes('application/mc-column')) {
                       e.preventDefault()
+                      return
+                    }
+                    // A derived lane leaves the drop refused (no preventDefault)
+                    // and shows why.
+                    if (laneDef && types.includes('text/plain')) {
+                      setDerivedHintCol(col.id)
                       return
                     }
                     // Accept session-card drop only on status lanes
@@ -6107,9 +6126,14 @@ function ChatSidebar({
                       e.currentTarget.classList.add('ring-1', 'ring-accent')
                     }
                   }}
-                  onDragLeave={e => { e.currentTarget.classList.remove('ring-1', 'ring-accent') }}
+                  onDragLeave={e => {
+                    e.currentTarget.classList.remove('ring-1', 'ring-accent')
+                    // Moving onto a child also fires dragleave; only leaving the lane clears.
+                    if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDerivedHintCol(c => (c === col.id ? null : c))
+                  }}
                   onDrop={e => {
                     e.currentTarget.classList.remove('ring-1', 'ring-accent')
+                    setDerivedHintCol(null)
                     // Column reorder takes priority
                     const draggedCol = e.dataTransfer.getData('application/mc-column')
                     if (draggedCol && draggedCol !== col.id) {
@@ -6124,7 +6148,7 @@ function ChatSidebar({
                     const k = e.dataTransfer.getData('text/plain')
                     if (k) dropSlotMutation.mutate({ slot: k, columnId: col.id })
                   }}>
-                  <div className="flex items-center gap-1 p-2 border-b border-border bg-bg-elevated">
+                  <div className="relative flex items-center gap-1 p-2 border-b border-border bg-bg-elevated">
                     {/* Reorder handle: mouse-only drag source for column reordering. */}
                     {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions */}
                     <span draggable
@@ -6185,6 +6209,14 @@ function ChatSidebar({
                       aria-label={i18nT('pages.chatSidebar.delete_column')}
                       onClick={() => { if (confirm(i18nT('pages.chatSidebar.delete_this_column'))) deleteColumnMutation.mutate(col.id) }}
                     ><X size={12} /></button>
+                    {/* Overlays the top of the card list, so the cards under the
+                      * pointer do not move while it shows. */}
+                    {nativeSessionDrag !== null && derivedHintCol === col.id && (
+                      <span role="status" aria-live="polite" data-testid={`column-derived-hint-${col.id}`}
+                        className="absolute top-full left-0 right-0 z-10 pointer-events-none px-2 py-1 text-[11px] text-muted border-b border-border bg-bg-elevated">
+                        {i18nT('pages.chatSidebar.lane_derived_hint')}
+                      </span>
+                    )}
                   </div>
                   {/* Column filter popover — portaled to <body> so the column's
                       overflow-hidden ancestor cannot clip it; viewport-anchored

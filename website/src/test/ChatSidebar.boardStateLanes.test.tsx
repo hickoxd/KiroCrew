@@ -6,7 +6,7 @@
  * and a lane offering a drop target that cannot mean anything.
  */
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
-import { render, act, waitFor } from '@testing-library/react'
+import { render, act, waitFor, fireEvent } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -135,6 +135,13 @@ function slotKeysIn(container: HTMLElement, columnId: string): string[] {
     .map(el => el.getAttribute('data-slot-key') as string)
 }
 
+function startCardDrag(container: HTMLElement, key: string) {
+  const row = container.querySelector(`[data-slot-key="${key}"]`) as HTMLElement
+  const source = row?.querySelector('[data-session-row]') as HTMLElement
+  expect(source, `no draggable card for ${key}`).toBeTruthy()
+  fireEvent.dragStart(source, { dataTransfer: { setData: vi.fn(), types: [] } })
+}
+
 beforeEach(() => { localStorage.clear(); createTagColumn.mockClear(); deleteTagColumn.mockClear() })
 afterEach(() => vi.clearAllMocks())
 
@@ -175,6 +182,67 @@ describe('board state lanes', () => {
     Object.defineProperty(dragOver, 'dataTransfer', { value: { types: ['text/plain'] } })
     lane.dispatchEvent(dragOver)
     expect(dragOver.defaultPrevented).toBe(false)
+  })
+
+  it('says why a lane refuses the card while one is dragged over it', () => {
+    // The header's hover title is out of sight mid-drag, so the lane shows the
+    // reason in a live line -- and the drop must still stay refused.
+    const { container } = renderSidebar()
+    const lane = container.querySelector('[data-testid="column-lane-working"]') as HTMLElement
+    const hint = () => lane.querySelector('[data-testid="column-derived-hint-lane-working"]')
+    expect(hint()).toBeNull()
+    startCardDrag(container, 'chat-idle')
+    expect(fireEvent.dragOver(lane, { dataTransfer: { types: ['text/plain'] } })).toBe(true)
+    expect(hint()?.getAttribute('role')).toBe('status')
+    expect(hint()?.getAttribute('aria-live')).toBe('polite')
+    expect(hint()?.textContent).toBe('Sessions move into this lane on their own as their state changes')
+    // Only the hovered lane speaks.
+    expect(container.querySelector('[data-testid="column-derived-hint-lane-idle"]')).toBeNull()
+    fireEvent.dragLeave(lane)
+    expect(hint()).toBeNull()
+  })
+
+  it('hides the lane hint when the drag ends anywhere', () => {
+    // A refused drop fires no drop event, so the window's dragend is the end.
+    const { container } = renderSidebar()
+    const lane = container.querySelector('[data-testid="column-lane-idle"]') as HTMLElement
+    const hint = () => lane.querySelector('[data-testid="column-derived-hint-lane-idle"]')
+    startCardDrag(container, 'chat-working')
+    fireEvent.dragOver(lane, { dataTransfer: { types: ['text/plain'] } })
+    expect(hint()).toBeTruthy()
+    act(() => { window.dispatchEvent(new Event('dragend')) })
+    expect(hint()).toBeNull()
+    // The next drag starts clean rather than reviving the old lane's hint.
+    startCardDrag(container, 'chat-working')
+    expect(hint()).toBeNull()
+  })
+
+  it('drops the lane hint while the card is over a folder that takes it', async () => {
+    // A folder block inside the lane accepts the card and stops the dragover,
+    // so the lane must not keep saying it refuses the card.
+    const filed = { ...idleSlot, key: 'chat-filed', title: 'Filed', folder_id: 'f-1' }
+    const { container, qc } = renderSidebar([idleSlot, filed])
+    const folderSel = '[data-testid="col-lane-idle-folder-f-1"]'
+    await waitFor(async () => {
+      await act(async () => { qc.setQueryData(['chat-folders'], [{ id: 'f-1', name: 'Folder', collapsed: false, order: 0 }]) })
+      expect(container.querySelector(folderSel)).toBeTruthy()
+    })
+    const lane = container.querySelector('[data-testid="column-lane-idle"]') as HTMLElement
+    const hint = () => lane.querySelector('[data-testid="column-derived-hint-lane-idle"]')
+    startCardDrag(container, 'chat-idle')
+    fireEvent.dragOver(lane, { dataTransfer: { types: ['text/plain'] } })
+    expect(hint()).toBeTruthy()
+    const folder = container.querySelector(folderSel) as HTMLElement
+    expect(fireEvent.dragOver(folder, { dataTransfer: { types: ['text/plain'] } })).toBe(false)
+    expect(hint()).toBeNull()
+  })
+
+  it('shows no lane hint for a column reorder drag', () => {
+    const { container } = renderSidebar()
+    const lane = container.querySelector('[data-testid="column-lane-working"]') as HTMLElement
+    startCardDrag(container, 'chat-idle')
+    fireEvent.dragOver(lane, { dataTransfer: { types: ['application/mc-column'] } })
+    expect(lane.querySelector('[data-testid="column-derived-hint-lane-working"]')).toBeNull()
   })
 
   it('labels each lane by its state, not by a tag or a fallback name', () => {
