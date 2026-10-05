@@ -822,6 +822,26 @@ path such as `/usr/local/bin` also avoids the problem.
 
 [#10813]: https://github.com/kirodotdev/KiroCrew/issues/10813
 
+### SELinux labels on files the service writes
+
+On any SELinux host (enforcing or permissive) the system unit carries a
+`SELinuxContext=` line set to the context of the shell that ran
+`kirocrew service install`, for example
+`unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023`. A new file takes its
+SELinux user from the process that creates it, so without that line the gateway
+runs as `system_u` and every cache it writes under your home (`~/.npm/_cacache`,
+`~/.gradle`, `~/.cache/pip`) is labelled `system_u`. Your own shell is then
+refused hardlinks inside it, which npm reports as `EPERM` / `syscall link` and
+"root-owned files" even though ownership is correct.
+
+The line is left out when SELinux is off, when the context cannot be read, and
+when the installing shell is itself `system_u`. A unit installed by an earlier
+build has no such line: re-run `kirocrew service install`, then fix an
+already-poisoned cache with `restorecon -RF ~/.npm` (or delete it). A confined
+SELinux user (`staff_u`, `user_u`) may find that local policy refuses PID 1 the
+switch into their context; the unit then fails to start and the per-user unit
+above is the way out.
+
 ### Setting the service port
 
 A system service inherits none of your shell environment, so `export

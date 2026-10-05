@@ -88,6 +88,10 @@ _CLASS_DIR = SELINUX_FS / "class"
 # the point of this module is to ask the host instead of encoding one policy's
 # type names.
 _SYSTEM_MANAGER_ATTR = Path("/proc/1/attr/current")
+# The installing process's own context: the login shell's, carried through sudo.
+_INSTALLER_ATTR = Path("/proc/self/attr/current")
+# Characters a context string is made of (user:role:type:level, MLS ranges).
+_CONTEXT_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.:,-")
 
 # libselinux's SELINUX_AVD_FLAGS_PERMISSIVE. Set in the compute_av reply when
 # the SOURCE DOMAIN is marked permissive in policy, which means the kernel logs
@@ -129,6 +133,35 @@ def _system_manager_context() -> str | None:
     # the policy lookup would then fail to parse the context.
     context = raw.strip().rstrip("\x00").strip()
     return context or None
+
+
+def installer_context() -> str | None:
+    """The context the system unit's gateway should run in, or None to omit it.
+
+    A file takes its SELinux user from the process that creates it. A system
+    unit's gateway runs as ``system_u``, so every cache it writes under the
+    user's home (``~/.npm/_cacache`` and the like) carries ``system_u`` and the
+    user's own shell is then refused hardlinks inside it. Running the gateway
+    in the installer's own context keeps those files in the user's SELinux user.
+
+    None when SELinux is off (no ``enforce`` node), when the context cannot be
+    read or does not look like ``user:role:type[:level]``, and when the
+    installer is itself ``system_u`` -- there is nothing better to ask for.
+    Permissive hosts get a context too: their files are labelled the same way
+    and stay wrong once the host enforces.
+    """
+    try:
+        _ENFORCE_PATH.read_text(encoding="ascii")
+        raw = _INSTALLER_ATTR.read_text(encoding="ascii")
+    except (OSError, UnicodeDecodeError):
+        return None
+    context = raw.strip().rstrip("\x00").strip()
+    fields = context.split(":")
+    if len(fields) < 3 or not all(fields[:3]) or not set(context) <= _CONTEXT_CHARS:
+        return None
+    if fields[0] == "system_u":
+        return None
+    return context
 
 
 def _file_context(path: str) -> str | None:
