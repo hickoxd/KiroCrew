@@ -178,7 +178,12 @@ def _url_payload_command(n: int) -> str:
 #:
 #: Raised for the read-only bash gate's refusal of variable-assigning expansions
 #: (`$[...]`, an `=` after `${`): one pattern alternative plus its reason comment.
-_PACKAGE_LINE_BUDGET = 28_428
+#:
+#: Raised again, from 28,428, for the Windows alias fold in ``paths.py``: one lexical
+#: helper strips a local-drive namespace prefix and a default-stream suffix, and
+#: ``_candidate_forms`` resolves the folded spelling while keeping the raw one as a
+#: candidate. No target, no matching rule and no threshold moved.
+_PACKAGE_LINE_BUDGET = 28_449
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
