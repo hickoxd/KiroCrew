@@ -51,6 +51,15 @@ _READ_ONLY_BASH_PREFIXES: tuple[str, ...] = (
     "realpath",
     "basename",
     "dirname",
+    # Stdout-only filters: no flag writes a file or runs a program. Kept off: `rg`
+    # (`--pre` runs a program), `printf` (`-v` assigns a variable), `jq` (evaluates a
+    # program) and `xxd` (`-r` writes a file).
+    "tr",
+    "nl",
+    "rev",
+    "comm",
+    "od",
+    "column",
     "git status",
     "git log",
     "git diff",
@@ -77,7 +86,8 @@ _READ_ONLY_BASH_PREFIXES: tuple[str, ...] = (
 )
 
 _READ_ONLY_PIPE_RE = re.compile(
-    r"^\s*(grep|egrep|fgrep|head|tail|wc|sort|uniq|cut|less|more|cat)\b"
+    r"^\s*(grep|egrep|fgrep|head|tail|wc|sort|uniq|cut|less|more|cat"
+    r"|tr|nl|rev|comm|od|column)\b"
 )
 
 # Reject redirections and command substitutions, conservatively.

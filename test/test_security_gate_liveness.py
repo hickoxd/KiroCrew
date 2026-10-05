@@ -178,7 +178,10 @@ def _url_payload_command(n: int) -> str:
 #:
 #: Raised for the read-only bash gate's refusal of variable-assigning expansions
 #: (`$[...]`, an `=` after `${`): one pattern alternative plus its reason comment.
-_PACKAGE_LINE_BUDGET = 28_428
+#:
+#: Raised for six stdout-only filters on the read-only bash allowlist (`tr`, `nl`,
+#: `rev`, `comm`, `od`, `column`) and their reason comment.
+_PACKAGE_LINE_BUDGET = 28_438
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
