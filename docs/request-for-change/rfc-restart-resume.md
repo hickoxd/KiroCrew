@@ -67,7 +67,7 @@ At `213339f671`:
   is added), and clears the marker. That is the whole recovery: the composer
   offers **Resume** (`ChatInput.tsx`, gated on
   `selectTurnInterrupted`, the mirror of `is_turn_interrupted` in
-  `src/kiro_crew/dashboard/state.py`) and waits.
+  `src/kiro_crew/dashboard/state_parts/transcript_rows.py`) and waits.
 - Nothing presses it. `restore_open_slots_async` and
   `restore_recent_sessions_async` (`src/kiro_crew/dashboard/chat_persistence.py`,
   driven from `_restore_dashboard_sessions` in
@@ -170,13 +170,16 @@ strands unattended work).
 - Relay (remote crew) slots, archives, incognito and temporary sessions: their
   turns are not this gateway's to resume, or nothing of them persists.
 - Any change to the in-turn retry ladders. They stay as they are; this design
-  starts where they give up.
+  starts where they give up. One row of theirs is touched after the fact, and
+  only by this design's own act: a give-up row the error pass has resumed is
+  stated as settled (§4.8). A row a person resumed, or nobody did, reads
+  exactly as it does today — with the switch off, no transcript changes.
 
 ## 4. Design
 
 ### 4.1 Settings
 
-Three keys on `DashboardConfig` (`src/kiro_crew/config/sections.py`), each with
+Three keys on `DashboardConfig` (`src/kiro_crew/config/sections_dashboard.py`), each with
 `_meta` label and help, read through the section builder like their
 neighbours, hot-applied (no restart; the boot pass reads the config the boot
 already loads, the error-time pass reads the live snapshot):
@@ -233,21 +236,29 @@ A chat is an **error-retry candidate** when a local turn ends by appending an
 | `meta.kind = gateway_restart_interruption` | yes (boot pass) | the turn was cut by the process, not by anything in the turn |
 | `meta.notice = transient_give_up` | yes, with backoff | the in-turn ladder gave up on provider weather; minutes later is a different sample |
 | `meta.kind = session_start_failed` | yes, once | the first Resume is the retry the kind's own comment says it deserves; `_SESSION_START_REPEAT_REFUSAL_AT` refuses the second identical start and this design does not override it |
-| `error` row with **no** structural kind | yes, with backoff | the generic terminal error (an `AcpError` the runner could not classify); bounded by the budget like every other |
+| `meta.kind = retry_invited` | yes, with backoff | the runner's own "please retry" rows (connection lost, session busy, turn or tool stalled, a shared agent process that kept restarting): their writers stamp the kind when the in-turn recovery has given up and a retry is the advice; bounded by the budget like every other |
 | `turn_timeout`, `auth_required`, `model_unentitled`, `usage_limit`, `context_overflow`, `app_agent_refused`, `chat_close_interruption` | **no** | §3 non-goals: a retry cannot cure it, or the user ended it, or another decision owns it |
-| an approval prompt nobody answered or that had no time left, "Session stuck", a turn that failed before it started (`meta.turn_failed`) | **no** | untagged rows a retry cannot cure; matched on the fixed words their writers use (`NEVER_RETRY_TEXT_PREFIXES`, `TURN_FAILED_META`) |
+| an `error` row with **no** structural kind, or a kind off this list | **no** | an approval prompt nobody answered or that had no time left, "Session stuck", an `AcpError` nobody classified, a writer added later without a tag: nothing is read off the row's words, so a terminal error is retried unattended only once its writer says so |
+| a turn that failed before it started (`meta.turn_failed`) | **no** | the send never went out; the person's own retry is the fix |
 | a Stop card anywhere in the newest turn, a `/compact` answered by its notice | **no** | the person's recorded intent that nothing continues on its own — including the give-up row the ladder writes when a Stop lands during its backoff |
 
-The retryable list is a frozenset in `restart_resume.py`
+The retryable list is a frozenset of structural kinds in `restart_resume.py`
 (`RETRYABLE_ERROR_KINDS`; the ladder's give-up row carries `meta.notice`
-rather than `meta.kind` and is handled beside it), so a new terminal kind is
-**not** retried until someone adds it — fail closed, the direction every other
-authorization list in the gateway takes.
+rather than `meta.kind` and is handled beside it). It has no "everything else"
+entry and matches no wording, so a new terminal error is **not** retried until
+its writer tags it — fail closed, the direction every other authorization list
+in the gateway takes. The tag is `retry_invited`
+(`chat_utils_injected_rows.py`), stamped by the ladder-end writers in
+`chat_runner.py` and `chat_turn/recovery.py` whose words ask for a retry; a
+terminal row that asks for something else — a new chat, an approval — stays
+untagged and is never retried on its own.
 
 Every candidate is then subject to `continue_slot_turn`'s own refusals,
 unchanged: running, stopping, queue pending, approval pending, sub-agents
-running, empty, `session_start_repeat`. A refusal is logged at `info` and
-costs nothing from the budget — nothing was dispatched.
+running, empty, `session_start_repeat`. A refusal is logged at `info` and the
+stamp spent for it is taken back in memory — nothing was dispatched; the line
+keeps it until the next save (§4.4), so a gateway that dies in that gap counts
+one resume that never ran, which is the fail-closed direction.
 
 ### 4.3 Mechanism
 
@@ -255,10 +266,14 @@ One module, `src/kiro_crew/dashboard/restart_resume.py`, with two entry
 points and no state of its own beyond what the slot carries.
 
 **The boot pass.** `_restore_dashboard_sessions` gains one call after both
-restores, the counter reseed and the permissions notice (§4.6):
-`restart_resume.start_boot_pass(state, cfg)`, which runs
-`resume_after_restart` as a background task so the server's listen is not
-delayed by it. The pass looks only at slots whose metadata line carried the
+restores and the counter reseed: `restart_resume.start_boot_pass(state, cfg)`,
+which runs ONE background task — the permissions notice pass (§4.6) first,
+then `resume_after_restart` — so the server's listen, and `KIROCREW_READY`
+behind it, wait on neither: each pass loads transcripts the restore deferred,
+one per chat concerned, which is work that grows with the person's session
+count and has no place on the boot path. The order inside the task is what
+keeps the notice ahead of any automatic dispatch. The pass looks only at slots
+whose metadata line carried the
 turn-in-flight marker (the restore's first reading of it), loads each such
 chat's deferred window off the loop, selects restart candidates (§4.2), and
 for each one calls `continue_slot_turn(state, slot,
@@ -293,19 +308,33 @@ of the queue. There is never more than one armed per slot.
 
 **What the model reads.** Two bodies with their own prefix lines, `[Continue
 — automatic after a restart]` and `[Continue — automatic after an error]`,
-registered beside `MANUAL_RESUME_RECOVERY_PREFIX` in `state.py` and in the
+registered beside `MANUAL_RESUME_RECOVERY_PREFIX` in
+`state_parts/injected_turns.py` and in the
 `RecoveryCard` prefix table. The shared text tells the model that the gateway
 resumed the turn and that no person has looked at the partial output above —
 so a model that was about to ask the user something does not read a press that
 never happened as an answer — and that it must check the current state before
 repeating a step. `continue_slot_turn` takes the body as an optional argument;
 the button and the tools are unchanged. Both bodies join the runner's
-interrupted-turn set (`_INTERRUPTED_TURN_RESUME_MSGS` in `chat_utils`, which
-replaces the literal of §2), so on a natively resumed session the lost turn is
-re-injected for an automatic resume exactly as for a press; the runner leaves
+interrupted-turn set (`_INTERRUPTED_TURN_RESUME_MSGS` in
+`chat_utils_turn_recovery`, which replaces the literal of §2), so on a natively
+resumed session the lost turn is re-injected for an automatic resume exactly as
+for a press; the runner leaves
 the gateway's own assistant-role system notices (§4.6's among them) out of the
 rows it hands the builder, since they sit in the span it quotes as the model's
 partial answer and are not the model's words.
+
+**What the resume may repeat.** The manual row asks the person to *review the
+partial output above, then resume*; an automatic resume skips that review by
+definition. The model is told to check the current state before repeating a
+step, but it reads only the transcript: a step whose effect lives outside it —
+an edit half applied, a message already sent, a migration part-way through —
+can be run twice. That is the second cost of the switch, after the model turns
+it spends, and the setting's help text, its visible description and the config
+help say so; the switch stays off by default for both reasons. A pass that
+skipped chats whose newest turn ended inside a tool call was considered and not
+taken: the cut most often lands mid-tool, so the skip would exclude most of what
+the feature is for, and the manual Resume carries the same repeat risk today.
 
 **What the person sees.** The `RecoveryCard` folds the row under a new title,
 *"Resumed automatically"*, with a detail line that carries the cause and the
@@ -335,18 +364,41 @@ stamps, `_auto_resume_stamps`, that is:
   and `history.SLOT_OWNED_META_KEYS` as the codec's docstring prescribes), so a
   gateway that restarts, resumes, crashes on the resumed turn and restarts
   again counts the earlier resumes. Without this a crash loop would replay the
-  resume on every boot; the stamp is appended by the dispatcher's
-  `before_dispatch` hook, under the slot lock right before the queue insert,
-  so it rides the awaited save that marks the resumed turn in flight and a
-  gateway that dies on that turn before the next 5 s flush still counts it.
+  resume on every boot; so the stamp is **committed before the resume is
+  queued**: the dispatcher appends it and awaits a fenced metadata merge of the
+  list (`_commit_budget`, the same merge-and-guard the turn marker uses), and
+  only a write that completed lets the dispatch go on to `continue_slot_turn`.
+  No log, a closing chat, a line that does not exist, a guard that refused, a
+  failed write or a write the log skipped (a legacy row-first transcript keeps
+  its first line, and the merge reports that no-op as success unless the caller
+  requires a write, so the commit does) refuses the resume and takes the stamp
+  back in memory: no automatic provider work ever runs on a budget that exists
+  only in memory. The
+  turn marker's own awaited save then carries the same list again, and carries
+  the **empty** list after a person's reset (`_auto_resume_reset_pending`) so a
+  gateway that dies before the 5 s flush does not read the spent budget back.
+  A reset can land while a stamp's write is in flight; the write is fenced to
+  the list it carries, decided under the line's lock, so a reset that landed
+  first refuses it (the person acted: the resume is refused anyway), and a reset
+  that landed after it leaves the flag pending, so the person's turn marker
+  carries the empty list over the spent stamps the write put on the line.
+  The marker clears the flag only on a **confirmed** write: its merge answered
+  true, or -- when the line did not exist yet -- its forced-save fallback did,
+  judged by its result and not best-effort (a best-effort save answers true to
+  a write that failed). A fallback that failed or was refused leaves the flag
+  pending, re-arms the flush and still admits the turn, so the next marker
+  carries the empty list again.
   The read is validated like the turn marker's: not a list, more than 64
-  entries, a non-finite or future stamp → the list is treated as **full** (64
-  stamps; fail closed for the automation; the manual Resume is untouched), a
-  warning names the slot, and the pause notice says the record could not be
-  read rather than quoting the sentinel count — the sentinel is told apart by
-  its size (the gateway never appends past the limit, whose ceiling of 20 is
-  far below 64), so a limit the person lowered below the stamps already in the
-  window is quoted as it is;
+  entries, a non-finite or future stamp, an integer too large for a float (the
+  read never raises: it runs inside the slot restore, where an exception would
+  make a tampered line a chat that cannot be opened) → the list is treated as
+  **full** (64 stamps dated now; fail closed for the automation for one window
+  from the read, which a person's send or Resume clears sooner; the manual
+  Resume is untouched), a warning names the slot, and the pause notice says the
+  record could not be read and for how long rather than quoting the sentinel
+  count — the sentinel is told apart by its size (the gateway never appends past
+  the limit, whose ceiling of 20 is far below 64), so a limit the person lowered
+  below the stamps already in the window is quoted as it is;
 - **reset** by a person's own action on the chat — a typed message, a Resume
   press — on the same principle `session_start_failure_streak` uses: new
   information from a person starts the count over. Neither an automatic resume
@@ -355,8 +407,8 @@ stamps, `_auto_resume_stamps`, that is:
 
 On exhaustion the chat gets one assistant-role system notice
 (`meta.kind = "auto_resume_paused"`, drawn by the existing `NoticeCard`),
-*"⚠️ Automatic resume paused for this chat: 5 attempts in the last 60 minutes
-(the limit is 5). Press Resume to continue; that also resets the count."*,
+*"⚠️ Automatic resume paused for this chat: its limit of 5 resumes in 1h is
+spent. Press Resume to continue; that also resets the count."*,
 one `state.notify("agent", ...)` so the notification centre and a linked
 channel hear it, and the Resume button, which was never removed. The notice is
 idempotent per budget: nothing is added while a pause notice already stands
@@ -388,7 +440,19 @@ memory by construction. For a person at the keyboard this is the status quo:
 the first tool call shows an approval card, and the card still offers "trust
 this session". For an unattended chat it is the stall
 [#12275](https://github.com/kirodotdev/KiroCrew/issues/12275) describes, and
-today nothing says so.
+today nothing says so. Stated plainly, because it bounds what the restart half
+of this design can do until crash-only trust lands
+([#15894](https://github.com/kirodotdev/KiroCrew/pull/15894)): a resumed turn
+that needs a tool approval waits for a person at that card like any
+interactive turn, and when nobody comes the approval times out into a row the
+error pass never retries. The boot pass therefore finishes on its own only the
+turns that need no approval (or that the global override covers); for a
+Trusted unattended chat it spends one turn to reach the approval card and
+tells the person why (the notice below). The error pass is unaffected: a turn
+that died mid-flight keeps the mode the chat holds, so a Trusted chat resumed
+after an error runs its tools without asking. The setting's visible
+description states both halves, per pass; a single "waits at the first tool
+approval" sentence would be false for the error pass.
 
 This design records and tells, and changes nothing else:
 
@@ -410,10 +474,9 @@ This design records and tells, and changes nothing else:
    compares each slot's recorded mode with the mode it came back holding. When
    they differ (and the recorded one was not already `normal`), one
    assistant-role system notice lands (`meta.kind = "approval_mode_dropped"`):
-   *"🔒 This chat's permissions changed when the app restarted: it was on
-   Trust (tools run without asking) and is now on Ask every time. A permission
-   granted to this chat lasts until the app is stopped or restarted. Pick it
-   again from the composer if you still want it."* — on a crewmate thread,
+   *"This chat's permissions changed when the app restarted: it was on
+   Trust (tools run without asking) and is now on Ask every time. Pick it again
+   from the composer if you still want it."* — on a crewmate thread,
    whose composer has no approval picker, the last sentence reads *"Opening it
    from the Crewmates page re-applies the mode its profile declares; set that
    mode in the profile to keep it across restarts."* A system notice, so every
@@ -464,6 +527,21 @@ one with `operation = "restart_resume:approval_mode_dropped"` and the
   notice in §4.4 and the permissions notice in §4.6, both gateway-authored
   assistant-role system notices drawn by the existing `NoticeCard` (their two
   kinds join `SYSTEM_NOTICE_KINDS` and its frontend twin).
+- **The row an automatic resume follows.** The terminal row the gateway resumed
+  on its own — the restart row, the ladder's give-up row, a `retry_invited`
+  row — still tells the reader to resume or retry, in red, right above the
+  *Resumed automatically* card that says the turn was. Once that card follows
+  it (`automaticResumeFollows`: the next row that bears on the turn is an
+  `auto_restart` / `auto_error` continuation, never inferred from the missing
+  Resume button, which a row the person typed past lacks too), `ErrorCard`
+  states the row as settled history in a neutral tone, keeping only the cause
+  — *"This turn was interrupted when the app restarted."*, *"The connection
+  was unstable."* — through `settledProse` (new keys under
+  `pages.chat.errorCard`); the card under it says the rest, so one fact is
+  said once. A person's own Resume
+  press is deliberately not a case: the row it follows keeps the rendering it
+  has always had, so a dashboard that never turns the switch on reads exactly
+  as before. A resumed row whose words carry no instruction stays verbatim.
 - **Settings → Chat:** §4.1; the command-palette settings registry is
   regenerated (`npm run gen:settings`).
 - **Sidebar:** unchanged. The slot summary's `interrupted` field reads the
@@ -604,8 +682,8 @@ default, so merging it changes nothing for anyone who does not turn it on.
    minutes skip the pass entirely, independent of per-chat budgets? Proposed:
    not in v1 (§4.5).
 5. **The generic-error row.** Should an `error` row with no structural kind be
-   retried (this document says yes, within the budget), or should the
-   retryable list be strictly positive — only `transient_give_up`,
-   `session_start_failed` and the restart row? Proposed: yes, because the
-   unclassified terminal error is the common shape of "the backend went away
-   for a minute", and the budget bounds the cost of being wrong.
+   retried, or should the retryable list be strictly positive? Resolved:
+   strictly positive. The rows that made the generic error worth retrying are
+   the runner's own "please retry" rows, and those now carry `retry_invited`
+   from their writers, so the list names kinds only and reads no wording; an
+   unclassified terminal error is not retried until someone tags its writer.
